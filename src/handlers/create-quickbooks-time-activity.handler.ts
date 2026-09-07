@@ -7,6 +7,7 @@ export interface CreateTimeActivityInput {
   vendor_ref?: string;
   employee_ref?: string;
   customer_ref?: string;
+  class_ref?: string;
   item_ref?: string;
   hours?: number;
   minutes?: number;
@@ -29,6 +30,7 @@ export async function createQuickbooksTimeActivity(data: CreateTimeActivityInput
     if (data.vendor_ref) payload.VendorRef = { value: data.vendor_ref };
     if (data.employee_ref) payload.EmployeeRef = { value: data.employee_ref };
     if (data.customer_ref) payload.CustomerRef = { value: data.customer_ref };
+    if (data.class_ref) payload.ClassRef = { value: data.class_ref };
     if (data.item_ref) payload.ItemRef = { value: data.item_ref };
     if (data.hours !== undefined) payload.Hours = data.hours;
     if (data.minutes !== undefined) payload.Minutes = data.minutes;
