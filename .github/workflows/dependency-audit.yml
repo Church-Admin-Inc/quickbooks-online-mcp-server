@@ -1,0 +1,23 @@
+name: Dependency audit
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Upstream intuit-oauth still carries a moderate, no-fix advisory through
+      # query-string/decode-uri-component. Block high and critical regressions.
+      - run: npm audit --omit=dev --audit-level=high
