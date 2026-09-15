@@ -215,6 +215,22 @@ describe("unsupported parameter reporting", () => {
     expect(knownParamKeys(undefined)).toBeNull();
   });
 
+  it("knownParamKeys reads shape provided as a plain object (zod v4 style)", () => {
+    const objectShapeSchema = { _def: { shape: { a: true, b: true } } };
+    expect(knownParamKeys(objectShapeSchema)).toEqual(new Set(["a", "b"]));
+  });
+
+  it("knownParamKeys returns null when reading the shape throws", () => {
+    const throwingSchema = {
+      _def: {
+        shape: () => {
+          throw new Error("broken shape");
+        },
+      },
+    };
+    expect(knownParamKeys(throwingSchema)).toBeNull();
+  });
+
   it("permissiveParamsSchema keeps unknown keys and passes non-object schemas through", () => {
     const permissive: any = permissiveParamsSchema(z.object({ a: z.string() }));
     expect(permissive.parse({ a: "x", extra: 1 }).extra).toBe(1);

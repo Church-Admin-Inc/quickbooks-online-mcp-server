@@ -12,6 +12,7 @@
  * 4. isSymbolicLink: fails closed (returns false) on any fs error.
  */
 import { jest } from '@jest/globals';
+import path from 'path';
 
 process.env.QUICKBOOKS_CLIENT_ID = 'test-client-id';
 process.env.QUICKBOOKS_CLIENT_SECRET = 'test-client-secret';
@@ -165,8 +166,8 @@ describe('saveTokensToEnv (via authenticate)', () => {
     // and is absolute (not the bare relative string, and not cwd-relative).
     const writtenPath = writeFileSyncSpy.mock.calls[writeFileSyncSpy.mock.calls.length - 1][0] as string;
     expect(writtenPath).not.toBe('../data/.env'); // not written verbatim
-    expect(writtenPath.startsWith('/')).toBe(true); // absolute
-    expect(writtenPath.endsWith('/data/.env')).toBe(true); // resolved to link dir's sibling
+    expect(path.isAbsolute(writtenPath)).toBe(true);
+    expect(writtenPath.endsWith(path.join('data', '.env'))).toBe(true);
   });
 
   it('falls back to atomic rename when lstatSync throws (isSymbolicLink fails closed)', async () => {

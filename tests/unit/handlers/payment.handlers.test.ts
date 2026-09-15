@@ -1,4 +1,4 @@
-import { jest, describe, it, expect, beforeEach, beforeAll } from '@jest/globals';
+import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 import { mockQuickbooksClient, mockQuickbooksClientClass, mockQuickBooksInstance, resetAllMocks } from '../../mocks/quickbooks.mock';
 
 // ESM-compatible module mocking
@@ -308,5 +308,4 @@ describe('Payment Handlers', () => {
     });
   });
 });
-
 

@@ -134,7 +134,7 @@ describe('GetInvoicePdfTool', () => {
       const sibling = fs.mkdtempSync(path.join(os.tmpdir(), 'qbo-pdf-tool-symlink-target-'));
       const linkPath = path.join(tmpRoot, 'link');
       try {
-        fs.symlinkSync(sibling, linkPath);
+        fs.symlinkSync(sibling, linkPath, process.platform === 'win32' ? 'junction' : 'dir');
         const result = await handler({ invoice_id: '1', output_path: 'link/escape.pdf' });
         expect(result.content[0].text).toMatch(/resolves outside QBO_PDF_OUTPUT_DIR/);
       } finally {

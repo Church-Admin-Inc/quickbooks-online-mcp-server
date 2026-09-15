@@ -78,10 +78,10 @@ jest.unstable_mockModule('open', () => ({ default: openMock }));
 // so we can assert "no doomed browser flow was started".
 let serverCreated = false;
 const fakeServer = {
-  listen: jest.fn((_port: unknown, _host: unknown, cb?: () => void) => {
-    if (cb) setImmediate(cb);
-    return fakeServer;
-  }),
+  // The test only needs to observe that interactive OAuth attempted to create
+  // a server. Do not invoke the listen callback: doing so starts browser-flow
+  // logging after the intentionally unresolved authenticate() promise.
+  listen: jest.fn(() => fakeServer),
   close: jest.fn(),
   on: jest.fn(),
   address: jest.fn(() => ({ address: '::', port: 8000, family: 'IPv6' })),

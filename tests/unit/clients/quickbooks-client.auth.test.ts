@@ -76,7 +76,7 @@ let callbackHandler:
   | undefined;
 const fakeServer = {
   listen: jest.fn((_port: unknown, _host: unknown, cb?: () => void) => {
-    if (cb) setImmediate(cb);
+    if (cb) cb();
     return fakeServer;
   }),
   close: jest.fn(),
@@ -116,10 +116,8 @@ async function untilCallbackRegistered(timeoutMs = 2000): Promise<void> {
   }
 }
 
-// server.listen()'s callback (where authorizeUri() is called) runs on a
-// setImmediate scheduled AFTER http.createServer() already set callbackHandler
-// synchronously, so untilCallbackRegistered() alone can resolve before
-// authorizeUri() has actually been invoked. Poll for that call separately.
+// Poll separately for authorizeUri() so this helper remains valid if the
+// listen mock later becomes asynchronous.
 async function untilAuthorizeUriCalled(client: MockOAuth, timeoutMs = 2000): Promise<void> {
   const start = Date.now();
   while (client.authorizeUri.mock.calls.length === 0) {
