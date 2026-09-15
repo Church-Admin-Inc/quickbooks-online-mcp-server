@@ -9,6 +9,7 @@ const toolSchema = z.object({
   vendor_ref: z.string().optional().describe("Vendor ID (if name_of is Vendor)"),
   employee_ref: z.string().optional().describe("Employee ID (if name_of is Employee)"),
   customer_ref: z.string().optional().describe("Customer ID for billing"),
+  class_ref: z.string().optional().describe("Class ID for class tracking"),
   item_ref: z.string().optional().describe("Service item ID"),
   hours: z.number().optional().describe("Hours worked"),
   minutes: z.number().optional().describe("Minutes worked"),

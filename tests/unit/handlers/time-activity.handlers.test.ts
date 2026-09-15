@@ -75,6 +75,7 @@ describe('TimeActivity Handlers', () => {
         name_of: 'Employee',
         employee_ref: 'emp-1',
         customer_ref: 'cust-1',
+        class_ref: 'class-1',
         item_ref: 'item-1',
         hours: 8,
         minutes: 30,
@@ -88,6 +89,36 @@ describe('TimeActivity Handlers', () => {
 
       expect(result.isError).toBe(false);
       expect(result.result).toEqual(mockActivity);
+    });
+
+    it('should pass ClassRef through to the QuickBooks payload when class_ref is given', async () => {
+      const mockActivity = { Id: '126', Hours: 8 };
+      mockQuickBooksInstance.createTimeActivity.mockImplementation((payload: any, cb: any) => cb(null, mockActivity));
+
+      await createQuickbooksTimeActivity({
+        name_of: 'Employee',
+        employee_ref: 'emp-1',
+        class_ref: 'class-1',
+        hours: 8
+      });
+
+      // Regression test: class_ref was previously accepted on the input but silently
+      // dropped before reaching QuickBooks, so time entries created through this tool
+      // landed unclassified regardless of what was passed in.
+      expect(mockQuickBooksInstance.createTimeActivity).toHaveBeenCalledWith(
+        expect.objectContaining({ ClassRef: { value: 'class-1' } }),
+        expect.any(Function)
+      );
+    });
+
+    it('should omit ClassRef entirely when class_ref is not given', async () => {
+      const mockActivity = { Id: '127', Hours: 8 };
+      mockQuickBooksInstance.createTimeActivity.mockImplementation((payload: any, cb: any) => cb(null, mockActivity));
+
+      await createQuickbooksTimeActivity({ name_of: 'Employee', employee_ref: 'emp-1', hours: 8 });
+
+      const [payload] = mockQuickBooksInstance.createTimeActivity.mock.calls[0];
+      expect(payload).not.toHaveProperty('ClassRef');
     });
   });
 
