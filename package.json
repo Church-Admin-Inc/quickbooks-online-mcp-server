@@ -21,9 +21,9 @@
         "test:coverage": "NODE_OPTIONS='--experimental-vm-modules' jest --coverage"
     },
     "dependencies": {
-        "@modelcontextprotocol/sdk": "^1.6.0",
+        "@modelcontextprotocol/sdk": "^1.26.0",
         "dotenv": "^16.4.7",
-        "intuit-oauth": "^4.0.0",
+        "intuit-oauth": "^4.2.5",
         "node-quickbooks": "^2.0.43",
         "open": "^9.1.0",
         "zod": "^3.24.2"
