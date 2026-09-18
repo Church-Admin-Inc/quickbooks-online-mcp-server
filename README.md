@@ -71,6 +71,11 @@ QUICKBOOKS_REALM_ID=your_realm_id
 # QUICKBOOKS_DISABLE_WRITE=true    # suppress create_* tools
 # QUICKBOOKS_DISABLE_UPDATE=true   # suppress update_* tools
 # QUICKBOOKS_DISABLE_DELETE=true   # suppress delete_* tools
+
+# Optional: override which tool groups are registered at all (default: the
+# finance-workflow subset below). A disabled group's tools are absent from
+# the tool listing entirely, not merely hidden.
+# QUICKBOOKS_ENABLED_TOOL_GROUPS=reports,invoices,bills,payments,customers,vendors,accounts,journal_entries,sales_receipts,deposits,classes,departments
 ```
 
 `.env` is gitignored so your real credentials stay local.
@@ -103,6 +108,20 @@ Add to your Claude Code MCP configuration:
 ```
 
 Set any of the `DISABLE_*` flags to `"true"` to prevent that category of tools from being registered. Read tools (`get_*`, `search_*`) are always available.
+
+### Tool groups
+
+Which tools are registered at all is configuration, separate from the `DISABLE_*` flags above. Tools are partitioned into named groups (`reports`, `invoices`, `bills`, `payments`, `customers`, `vendors`, `accounts`, `journal_entries`, `sales_receipts`, `deposits`, `classes`, `departments`, `estimates`, `items`, `employees`, `purchases`, `credit_memos`, `refund_receipts`, `purchase_orders`, `vendor_credits`, `transfers`, `time_activities`, `terms`, `payment_methods`, `budgets`, `tax_codes`, `tax_rates`, `tax_agencies`, `company_info`, `preferences`, `attachables`).
+
+By default, only the finance-workflow subset is registered: `reports`, `invoices`, `bills`, `payments`, `customers`, `vendors`, `accounts`, `journal_entries`, `sales_receipts`, `deposits`, `classes` and `departments`. Classes and departments are load-bearing for fund accounting, contribution journal entries and special-event tracking, so they ship enabled rather than as part of the optional tail. This keeps the tool surface small enough for reliable tool selection; loading all ~145 tools on every conversation measurably degrades it.
+
+To register a different set, set `QUICKBOOKS_ENABLED_TOOL_GROUPS` to a comma-separated list of group names - this replaces the default set entirely, so include every group you want (including the finance defaults, if you still want them):
+
+```env
+QUICKBOOKS_ENABLED_TOOL_GROUPS=reports,invoices,bills,payments,customers,vendors,accounts,journal_entries,sales_receipts,deposits,classes,departments,estimates,employees
+```
+
+A tool whose group is not enabled is never registered with the MCP server - it is absent from the tool listing entirely, not merely hidden behind a runtime check. A tool's CRUD-category disable flag (`DISABLE_WRITE`/`UPDATE`/`DELETE`) is still enforced on top of this for any tool that does reach registration.
 
 ---
 
