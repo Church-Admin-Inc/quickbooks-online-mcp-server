@@ -24,6 +24,7 @@
         "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage"
     },
     "dependencies": {
+        "@google-cloud/firestore": "^9.2.0",
         "@modelcontextprotocol/sdk": "^1.26.0",
         "dotenv": "^16.4.7",
         "intuit-oauth": "^4.2.5",

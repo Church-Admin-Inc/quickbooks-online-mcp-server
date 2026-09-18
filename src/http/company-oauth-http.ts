@@ -8,7 +8,7 @@ import { IntuitAccountingOAuthProvider, type IntuitAccountingAuthorizationProvid
 import { IntuitCompanyInfoProvider, type CompanyInfoProvider } from "../auth/company-info-provider.js";
 import { loadIntuitFederationConfig } from "../auth/oauth-config.js";
 import { FirestoreGrantStore, type GrantStore } from "../clients/firestore-grant-store.js";
-import { InMemoryFirestore } from "../clients/in-memory-firestore.js";
+import { createFirestore } from "../clients/cloud-firestore.js";
 import { guardOAuthEndpoint } from "./oauth-http.js";
 
 /**
@@ -31,17 +31,17 @@ export interface CompanyOAuthDeps {
 }
 
 /**
- * The grant store defaults to an in-process one (see ../clients/in-memory-firestore.ts)
- * until a real Firestore client is wired up for a deployed environment (see
- * the streamable-http-index.ts comment on issue #13) — overridable via
- * createStreamableHttpServer's `companyAuth` option, exactly like `oauth`.
+ * The grant store is backed by real Firestore when deployed (GOOGLE_CLOUD_PROJECT
+ * set — see ../clients/cloud-firestore.ts's createFirestore()) or an
+ * in-process store otherwise (local dev, tests, stdio usage) — overridable
+ * via createStreamableHttpServer's `companyAuth` option, exactly like `oauth`.
  * The Intuit config is loaded lazily (see IntuitAccountingOAuthProvider's own
  * docstring), so building these defaults never throws just because
  * QUICKBOOKS_CLIENT_ID/SECRET aren't set on a process that never uses this flow.
  */
 export function createDefaultCompanyOAuthDeps(): CompanyOAuthDeps {
   return {
-    grantStore: new FirestoreGrantStore(new InMemoryFirestore()),
+    grantStore: new FirestoreGrantStore(createFirestore()),
     pending: new CompanyAuthorizationStore(),
     authorizationProvider: new IntuitAccountingOAuthProvider(loadIntuitFederationConfig),
     companyInfoProvider: new IntuitCompanyInfoProvider(),

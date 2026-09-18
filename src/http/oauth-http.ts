@@ -48,7 +48,24 @@ export function resolveOrigin(req: http.IncomingMessage, hostname: string): stri
   const proto = (Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto)?.split(",")[0]?.trim();
   const socketIsTls = (req.socket as { encrypted?: boolean }).encrypted === true;
   const protocol = proto || (socketIsTls ? "https" : "http");
-  const port = (req.socket as { localPort?: number }).localPort;
+
+  // The Host header's own port, when it has one (e.g. "127.0.0.1:3000" for a
+  // direct local-dev connection), reflects what the client actually
+  // addressed. The socket's local port is only trustworthy as a fallback for
+  // a *direct* connection (no X-Forwarded-Proto) with no port in the Host
+  // header — behind a reverse proxy (Cloud Run and friends) that port is the
+  // container's internal listen port, not the public one, and the forwarded
+  // Host header omits the port entirely to mean "the protocol's default".
+  // Unlike x-forwarded-proto, Node types (and parses) the Host header as a
+  // single string, never an array — no array-handling needed here.
+  const headerPort = req.headers.host?.match(/:(\d+)$/)?.[1];
+  const socketPort = (req.socket as { localPort?: number }).localPort;
+  let port: number | undefined;
+  if (headerPort) {
+    port = Number(headerPort);
+  } else if (!proto) {
+    port = socketPort;
+  }
   const host = port && port !== 80 && port !== 443 ? `${hostname}:${port}` : hostname;
   return `${protocol}://${host}`;
 }

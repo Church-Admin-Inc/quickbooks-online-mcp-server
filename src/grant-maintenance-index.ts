@@ -14,7 +14,7 @@
  * unhealthy.
  */
 import { FirestoreGrantStore } from "./clients/firestore-grant-store.js";
-import { InMemoryFirestore } from "./clients/in-memory-firestore.js";
+import { createFirestore } from "./clients/cloud-firestore.js";
 import { loadIntuitFederationConfig } from "./auth/oauth-config.js";
 import { GrantMaintenanceJob, type GrantMaintenanceRunResult } from "./jobs/grant-maintenance.js";
 
@@ -38,11 +38,9 @@ function report(label: string, result: GrantMaintenanceRunResult): void {
 
 async function main(): Promise<void> {
   const mode = readMode();
-  // No real Firestore client is wired up yet (see FirestoreAuditLog's own
-  // caveat in ../audit/audit-log.ts) - this default is in-process only, so
-  // this entry point is only meaningful once a deployment (issue #13) wires
-  // a real Firestore instance in its place.
-  const grantStore = new FirestoreGrantStore(new InMemoryFirestore());
+  // Backed by real Firestore when GOOGLE_CLOUD_PROJECT is set (issue #13's
+  // deployment — see createFirestore()), in-process otherwise.
+  const grantStore = new FirestoreGrantStore(createFirestore());
   const job = new GrantMaintenanceJob(grantStore, loadIntuitFederationConfig);
 
   const results: GrantMaintenanceRunResult[] = [];

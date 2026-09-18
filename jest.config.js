@@ -98,6 +98,18 @@ export default {
       lines: 95,
       statements: 95,
     },
+    // CloudFirestore wraps the real Admin SDK 1:1 (issue #13's deployment)
+    // and is deliberately not exercised against a live Firestore instance or
+    // emulator, matching FirestoreLike's own testing decision (see
+    // firestore-grant-store.ts): the seam is driven behaviorally against
+    // InMemoryFirestore/FakeFirestore instead. Only createFirestore()'s
+    // env-based selection is covered here.
+    './src/clients/cloud-firestore.ts': {
+      branches: 70,
+      functions: 20,
+      lines: 30,
+      statements: 30,
+    },
   },
   moduleNameMapper: {
     '^(\\.{1,2}/.*)\\.js$': '$1',

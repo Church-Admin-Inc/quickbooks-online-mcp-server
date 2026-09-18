@@ -23,22 +23,31 @@ describe('resolveOrigin', () => {
     );
   });
 
-  it('trusts X-Forwarded-Proto from a reverse proxy (e.g. Cloud Run) over the raw socket', () => {
+  it('trusts X-Forwarded-Proto from a reverse proxy (e.g. Cloud Run) over the raw socket, and ignores the container-internal local port', () => {
     expect(
       resolveOrigin(fakeRequest({ headers: { 'x-forwarded-proto': 'https' }, localPort: 8080 }), 'qbo.example.com')
-    ).toBe('https://qbo.example.com:8080');
+    ).toBe('https://qbo.example.com');
   });
 
   it('takes the first value when X-Forwarded-Proto is a comma-separated chain', () => {
     expect(
       resolveOrigin(fakeRequest({ headers: { 'x-forwarded-proto': 'https, http' }, localPort: 8080 }), 'qbo.example.com')
-    ).toBe('https://qbo.example.com:8080');
+    ).toBe('https://qbo.example.com');
   });
 
   it('takes the first value when X-Forwarded-Proto is sent as multiple headers (array)', () => {
     expect(
       resolveOrigin(fakeRequest({ headers: { 'x-forwarded-proto': ['https', 'http'] }, localPort: 8080 }), 'qbo.example.com')
-    ).toBe('https://qbo.example.com:8080');
+    ).toBe('https://qbo.example.com');
+  });
+
+  it('prefers an explicit port on the Host header over the socket local port, even behind a proxy', () => {
+    expect(
+      resolveOrigin(
+        fakeRequest({ headers: { 'x-forwarded-proto': 'https', host: 'qbo.example.com:8443' }, localPort: 8080 }),
+        'qbo.example.com'
+      )
+    ).toBe('https://qbo.example.com:8443');
   });
 
   it('omits the port for the standard port of its protocol (443)', () => {

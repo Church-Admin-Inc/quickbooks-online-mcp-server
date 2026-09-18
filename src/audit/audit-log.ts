@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import type { FirestoreLike } from "../clients/firestore-grant-store.js";
-import { InMemoryFirestore } from "../clients/in-memory-firestore.js";
+import { createFirestore } from "../clients/cloud-firestore.js";
 
 /**
  * Independent write audit trail (issue #10). QuickBooks' own audit log
@@ -63,12 +63,11 @@ export class FirestoreAuditLog implements AuditLogger {
 }
 
 /**
- * Default audit log until a real Firestore client is wired up for a deployed
- * environment (mirrors createDefaultCompanyOAuthDeps() in
- * ../http/company-oauth-http.ts, and its own issue #13 caveat): in-process
- * only, so entries survive for the life of the server process but not a
- * restart.
+ * Default audit log, backed by real Firestore when deployed (issue #13's
+ * createFirestore()) or an in-process store otherwise — see
+ * createDefaultCompanyOAuthDeps() in ../http/company-oauth-http.ts for the
+ * same selection applied to the grant store.
  */
 export function createDefaultAuditLog(): AuditLogger {
-  return new FirestoreAuditLog(new InMemoryFirestore());
+  return new FirestoreAuditLog(createFirestore());
 }
