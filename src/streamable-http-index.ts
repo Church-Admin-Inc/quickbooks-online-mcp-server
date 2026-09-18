@@ -17,12 +17,14 @@ function readPort(): number {
   return 3000;
 }
 
-// Loopback-only by default: this transport has no authentication yet (that's
-// issue #6), so binding to every interface would expose every QuickBooks
-// tool to anything that can reach the host's network. A future deployment
-// (issue #13) that needs to accept connections from outside loopback — e.g.
-// behind Cloud Run — sets HOST explicitly, and should widen
-// MCP_HTTP_ALLOWED_HOSTS alongside it (see readAllowedHostnames below).
+// Loopback-only by default. Every request to MCP_HTTP_PATH now requires a
+// bearer token from this server's own OAuth endpoints (issue #6), but
+// loopback stays the default regardless — it also keeps the OAuth endpoints
+// themselves off the open network until a deployment is ready for them. A
+// future deployment (issue #13) that needs to accept connections from
+// outside loopback — e.g. behind Cloud Run — sets HOST explicitly, and
+// should widen MCP_HTTP_ALLOWED_HOSTS alongside it (see readAllowedHostnames
+// below).
 function readHost(): string {
   return process.env.HOST || "127.0.0.1";
 }
