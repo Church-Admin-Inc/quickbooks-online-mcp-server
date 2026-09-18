@@ -7,6 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import open from 'open';
+import { setDefaultCompanyContext, getCurrentCompanyContext } from '../context/company-context.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -666,15 +667,20 @@ export class QuickbooksClient {
 
   // ── Called by every handler on every request ─────────────────────────────
   // Checks token freshness on each invocation so handlers stay functional
-  // across 60-minute token boundaries without server restarts.
+  // across 60-minute token boundaries without server restarts. The Company is
+  // resolved from the ambient AsyncLocalStorage context (see
+  // ../context/company-context.js) rather than closing over the module
+  // singleton directly, so a later ticket can route different Companies here
+  // without changing this signature or any handler.
   static async getInstance(): Promise<QuickBooks> {
-    if (quickbooksClient.isTokenExpiredOrExpiringSoon()) {
-      await quickbooksClient.authenticate();
+    const client = resolveClientForCurrentContext();
+    if (client.isTokenExpiredOrExpiringSoon()) {
+      await client.authenticate();
     }
-    if (!quickbooksClient.quickbooksInstance) {
-      await quickbooksClient.authenticate();
+    if (!client.quickbooksInstance) {
+      await client.authenticate();
     }
-    return quickbooksClient.quickbooksInstance!;
+    return client.quickbooksInstance!;
   }
 
   // Static counterpart to getInstance() — returns raw OAuth credentials for
@@ -682,16 +688,17 @@ export class QuickbooksClient {
   // (e.g. POST /upload for binary attachments). Ensures token freshness on
   // every invocation, same as getInstance().
   static async getAuthCredentials(): Promise<{ accessToken: string; realmId: string; isSandbox: boolean }> {
-    if (quickbooksClient.isTokenExpiredOrExpiringSoon() || !quickbooksClient.accessToken) {
-      await quickbooksClient.authenticate();
+    const client = resolveClientForCurrentContext();
+    if (client.isTokenExpiredOrExpiringSoon() || !client.accessToken) {
+      await client.authenticate();
     }
-    if (!quickbooksClient.accessToken || !quickbooksClient.realmId) {
+    if (!client.accessToken || !client.realmId) {
       throw new Error('Quickbooks not authenticated');
     }
     return {
-      accessToken: quickbooksClient.accessToken,
-      realmId: quickbooksClient.realmId,
-      isSandbox: quickbooksClient.environment === 'sandbox',
+      accessToken: client.accessToken,
+      realmId: client.realmId,
+      isSandbox: client.environment === 'sandbox',
     };
   }
 
@@ -711,3 +718,21 @@ export const quickbooksClient = new QuickbooksClient({
   environment: environment,
   redirectUri: redirect_uri,
 });
+
+// ── Company resolution ───────────────────────────────────────────────────
+// One Company today, keyed by a stable identifier (the configured realm ID,
+// or a placeholder when none is known yet — e.g. before the first OAuth flow
+// completes). A later ticket registers further entries here as multi-Company
+// configuration is introduced; the lookup mechanism itself does not change.
+const DEFAULT_REALM_KEY = realm_id || '__default__';
+const clientsByRealmId = new Map<string, QuickbooksClient>([[DEFAULT_REALM_KEY, quickbooksClient]]);
+setDefaultCompanyContext({ realmId: DEFAULT_REALM_KEY });
+
+function resolveClientForCurrentContext(): QuickbooksClient {
+  const { realmId } = getCurrentCompanyContext();
+  const client = clientsByRealmId.get(realmId);
+  if (!client) {
+    throw new Error(`No QuickBooks client is registered for Company (realm) "${realmId}"`);
+  }
+  return client;
+}
