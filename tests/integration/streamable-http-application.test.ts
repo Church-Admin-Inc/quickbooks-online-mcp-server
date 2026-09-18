@@ -45,6 +45,39 @@ async function listen(server: http.Server): Promise<URL> {
   return new URL(`http://127.0.0.1:${port}${MCP_HTTP_PATH}`);
 }
 
+// `fetch` (undici) treats Host as a forbidden header and silently overrides
+// whatever value is passed, so a real Node `http.request` — which allows
+// setting it — is needed to simulate a client whose Host header doesn't
+// match the address actually being connected to (the DNS-rebinding shape).
+async function postWithHost(
+  port: number,
+  hostHeader: string
+): Promise<{ status: number; body: string }> {
+  const httpModule = await import('node:http');
+  return new Promise((resolve, reject) => {
+    const req = httpModule.request(
+      {
+        hostname: '127.0.0.1',
+        port,
+        path: MCP_HTTP_PATH,
+        method: 'POST',
+        headers: {
+          Host: hostHeader,
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+        },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body: data }));
+      }
+    );
+    req.on('error', reject);
+    req.end(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }));
+  });
+}
+
 describe('streamable HTTP application', () => {
   let server: http.Server;
 
@@ -146,6 +179,63 @@ describe('streamable HTTP application', () => {
     } finally {
       handleRequestSpy.mockRestore();
     }
+  });
+
+  it('rejects a request whose Host header is not in the allowlist (DNS-rebinding protection)', async () => {
+    server = createStreamableHttpServer(registerTestTools);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+
+    const { status, body } = await postWithHost(port, 'attacker.example');
+
+    expect(status).toBe(400);
+    expect(JSON.parse(body)).toEqual({ error: 'Invalid Host header' });
+  });
+
+  it('rejects a request with no Host header at all', async () => {
+    server = createStreamableHttpServer(registerTestTools);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+
+    // fetch/http.request always add a Host header; an HTTP/1.0-style raw
+    // request is the only way to send one without it.
+    const net = await import('node:net');
+    const response = await new Promise<string>((resolve, reject) => {
+      const socket = net.connect(port, '127.0.0.1', () => {
+        socket.write('GET ' + MCP_HTTP_PATH + ' HTTP/1.0\r\n\r\n');
+      });
+      let data = '';
+      socket.on('data', (chunk) => (data += chunk.toString()));
+      socket.on('end', () => resolve(data));
+      socket.on('error', reject);
+    });
+
+    expect(response).toMatch(/^HTTP\/1\.1 400/);
+    expect(response).toContain('Invalid Host header');
+  });
+
+  it('rejects a malformed Host header the same as a disallowed one', async () => {
+    server = createStreamableHttpServer(registerTestTools);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+
+    const { status, body } = await postWithHost(port, ':::');
+
+    expect(status).toBe(400);
+    expect(JSON.parse(body)).toEqual({ error: 'Invalid Host header' });
+  });
+
+  it('honors a custom allowedHostnames list', async () => {
+    server = createStreamableHttpServer(registerTestTools, { allowedHostnames: ['trusted.example'] });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+
+    // The default loopback hostname is no longer allowed once a custom list is supplied.
+    const rejected = await postWithHost(port, '127.0.0.1');
+    expect(rejected.status).toBe(400);
+
+    const accepted = await postWithHost(port, 'trusted.example');
+    expect(accepted.status).toBe(200);
   });
 
   it('answers 404 for paths other than the MCP endpoint', async () => {

@@ -63,20 +63,17 @@ export default {
       lines: 75,
       statements: 75,
     },
-    // Two gaps, both exercised behaviorally as far as they reasonably can be:
-    // (1) the `.catch(() => {})` no-op handlers on the res "close" listener
-    // only run if transport.close()/server.close() reject, which they don't
-    // under any condition the tests can induce without deeply mocking the
-    // SDK's transport — they exist solely so a rejection there can never
-    // crash the process with an unhandled rejection.
-    // (2) the remaining branch is the `!res.headersSent` guard's else-if,
-    // covered; the one genuinely unreachable branch (a request that is
-    // neither pre-header nor post-header, i.e. `res.headersSent` true AND
-    // `res.writableEnded` true at the same instant a new error occurs) has no
-    // behaviorally-triggerable path.
+    // The only gap: the `.catch(() => {})` no-op handlers on the res "close"
+    // listener only run if transport.close()/server.close() reject, which
+    // they don't under any condition the tests can induce without deeply
+    // mocking the SDK's transport — they exist solely so a rejection there
+    // can never crash the process with an unhandled rejection. Everything
+    // else (Host-header allowlisting including the missing/malformed/
+    // disallowed cases, routing, the whole-request and mid-response failure
+    // paths) is covered behaviorally.
     './src/http/create-streamable-http-server.ts': {
-      branches: 83,
-      functions: 66,
+      branches: 93,
+      functions: 71,
       lines: 100,
       statements: 100,
     },
