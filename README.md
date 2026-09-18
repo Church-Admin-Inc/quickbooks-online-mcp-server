@@ -30,7 +30,7 @@ This MCP server provides complete QuickBooks Online API integration for Claude C
 - **TypeScript** - Full type safety with Zod validation
 - **Tested** - Jest test suite with ESM support
 
-> Note: this is a local MCP server. It runs as a stdio subprocess on the developer's or partner's machine and authenticates to a QuickBooks Online company.
+> Note: this is a local MCP server. By default it runs as a stdio subprocess on the developer's or partner's machine and authenticates to a QuickBooks Online company. It can also serve MCP over streamable HTTP — run `npm run start:http` (listens on `PORT`/`MCP_HTTP_PORT`, default `3000`, at `/mcp`) — for driving it from an HTTP-based MCP client instead of a subprocess. The stdio entry point (`npm start` / `node dist/index.js`) is unaffected either way.
 
 > **Before you start:** This MCP server is easy to run once authenticated, but QuickBooks Online integration is gated by Intuit's OAuth app setup. You must register an app on the [Intuit Developer Portal](https://developer.intuit.com) and complete a one-time, browser-based OAuth handshake. **Sandbox** supports `http://localhost` redirect URIs; **production** requires a public HTTPS callback for the initial authorization. After that initial handshake, the server runs locally without further browser interaction (until the 100-day refresh window lapses). See [Authentication](#authentication) for full details.
 
