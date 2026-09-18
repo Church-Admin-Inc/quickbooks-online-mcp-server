@@ -478,6 +478,7 @@ docs/
 | [CHANGELOG.md](CHANGELOG.md) | Version history and all changes |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System architecture, patterns, and design decisions |
 | [docs/TESTING.md](docs/TESTING.md) | Testing strategy, ESM patterns, and coverage guide |
+| [docs/deploy.md](docs/deploy.md) | Deploying the streamable-HTTP server to Cloud Run |
 
 ---
 

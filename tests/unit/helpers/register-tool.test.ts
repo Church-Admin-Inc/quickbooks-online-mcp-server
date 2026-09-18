@@ -467,6 +467,25 @@ describe("Company-authorization checkpoint", () => {
     expect(result.content[0].text).not.toContain("you have not yet authorized");
   });
 
+  it("escapes Markdown metacharacters in an untrusted Company name, so it can't rewrite the authorize link's target", async () => {
+    setCompanyAuthorizationDeps({
+      grantStore: fakeGrantStore({ ...HEALTHY_GRANT, health: "unhealthy", companyName: 'Evil Co"](https://evil.example.com' }),
+      pending: new CompanyAuthorizationStore(),
+    });
+    const handler = jest.fn();
+    const registered = register("create_invoice", z.object({ customer_ref: z.string() }), handler);
+
+    const result = await runWithEmployeeContext(EMPLOYEE, () =>
+      runWithRequestContext({ origin: "https://qbo.example.com" }, () =>
+        registered({ params: { customer_ref: "1", realm_id: "named-co" } })
+      )
+    );
+
+    const text: string = result.content[0].text;
+    expect(text).not.toContain('"](https://evil.example.com');
+    expect(text).toContain("https://qbo.example.com/auth/quickbooks/authorize?token=");
+  });
+
   it("invokes the handler when the calling employee already holds a healthy grant", async () => {
     setCompanyAuthorizationDeps({ grantStore: fakeGrantStore(HEALTHY_GRANT), pending: new CompanyAuthorizationStore() });
     const handler = jest.fn(async () => ({ content: [{ type: "text", text: "ok" }] }));

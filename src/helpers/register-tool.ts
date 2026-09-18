@@ -215,6 +215,18 @@ export function setAuditLogger(logger: AuditLogger | undefined): void {
 }
 
 /**
+ * Backslash-escapes the Markdown link syntax characters (and strips
+ * newlines), for untrusted text embedded in a tool result's Markdown link.
+ * Narrow on purpose: only "\", "[", "]", "(", ")" can prematurely close the
+ * "]" or "(" in `[label](url)` and rewrite the link's actual target: other
+ * Markdown metacharacters (e.g. "-", "*", "_") can't redirect a link, so
+ * leaving them alone keeps an ordinary Company name readable.
+ */
+function escapeMarkdown(text: string): string {
+  return text.replace(/[\\[\]()]/g, "\\$&").replace(/[\r\n]+/g, " ");
+}
+
+/**
  * Prompt to authorize, in place of a QuickBooks call, when the calling
  * employee holds no healthy grant for realmId. `reason` (issue #9)
  * distinguishes a Company never authorized at all from one whose connection
@@ -231,7 +243,12 @@ function authorizationNeededResponse(
   reason: "missing" | "unhealthy",
   companyName: string | undefined
 ) {
-  const companyLabel = companyName ?? realmId;
+  // companyName comes from QuickBooks' own CompanyInfo (issue #9) - set by
+  // whoever administers that Company, not by this app - so it is untrusted
+  // input. Escaping Markdown metacharacters (and stripping newlines) before
+  // it goes into link text stops a crafted name from prematurely closing
+  // the "]" or "(" below and rewriting the rendered link's actual target.
+  const companyLabel = escapeMarkdown(companyName ?? realmId);
   const explanation =
     reason === "unhealthy"
       ? `your QuickBooks connection to Company "${companyLabel}" is no longer valid and must be re-authorized`
@@ -240,9 +257,14 @@ function authorizationNeededResponse(
     content: [
       {
         type: "text" as const,
+        // Markdown link, not a bare URL: clients that render tool-result
+        // text as Markdown (e.g. claude.ai relaying this in its own reply)
+        // then show a clickable link rather than pasted text. There is no
+        // MCP content type for an actual "Connect" button/widget today -
+        // that needs an MCP App UI resource (tracked separately: #28).
         text:
-          `${toolName} could not run: ${explanation}. Open this link, sign in with your Intuit account, and ` +
-          `authorize this Company, then retry the call: ${authorizeUrl}`,
+          `${toolName} could not run: ${explanation}. [Authorize QuickBooks Company "${companyLabel}"](${authorizeUrl}) ` +
+          `by signing in with your Intuit account, then retry the call.`,
       },
     ],
   };

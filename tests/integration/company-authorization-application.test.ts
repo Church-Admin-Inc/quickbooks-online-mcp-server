@@ -182,7 +182,7 @@ describe('Company-authorization application (#8)', () => {
 
   it('stores a grant on completed authorization, and reuses it on the next call (persists across conversations)', async () => {
     const { text: prompt } = await callTool(TOKEN_A, 'company-a');
-    const authorizeUrl = prompt.match(/https?:\S+/)![0];
+    const authorizeUrl = prompt.match(/https?:\/\/[^\s)]+/)![0];
 
     const callbackResponse = await completeAuthorization(authorizeUrl, 'company-a');
     expect(callbackResponse.status).toBe(200);
@@ -201,7 +201,7 @@ describe('Company-authorization application (#8)', () => {
   it('falls back to the realm id as the Company name when the CompanyInfo lookup fails, without blocking authorization', async () => {
     companyInfoProvider.shouldFail = true;
     const { text: prompt } = await callTool(TOKEN_A, 'company-a');
-    const authorizeUrl = prompt.match(/https?:\S+/)![0];
+    const authorizeUrl = prompt.match(/https?:\/\/[^\s)]+/)![0];
 
     const callbackResponse = await completeAuthorization(authorizeUrl, 'company-a');
     expect(callbackResponse.status).toBe(200);
@@ -212,7 +212,7 @@ describe('Company-authorization application (#8)', () => {
 
   it('refuses the grant when the employee authorizes a different Company than the one requested', async () => {
     const { text: prompt } = await callTool(TOKEN_A, 'company-a');
-    const authorizeUrl = prompt.match(/https?:\S+/)![0];
+    const authorizeUrl = prompt.match(/https?:\/\/[^\s)]+/)![0];
 
     const callbackResponse = await completeAuthorization(authorizeUrl, 'company-b');
     expect(callbackResponse.status).toBe(400);
@@ -223,7 +223,7 @@ describe('Company-authorization application (#8)', () => {
 
   it('surfaces a failed Intuit exchange with an error page, without creating a grant', async () => {
     const { text: prompt } = await callTool(TOKEN_A, 'company-a');
-    const authorizeUrl = prompt.match(/https?:\S+/)![0];
+    const authorizeUrl = prompt.match(/https?:\/\/[^\s)]+/)![0];
 
     authorizationProvider.exchangeShouldFail = true;
     const callbackResponse = await completeAuthorization(authorizeUrl, 'company-a');
@@ -249,14 +249,14 @@ describe('Company-authorization application (#8)', () => {
 
   it('routes a call to the grant belonging to the calling employee, never another employee sharing the same Company', async () => {
     const { text: promptA } = await callTool(TOKEN_A, 'shared-company');
-    const authorizeUrlA = promptA.match(/https?:\S+/)![0];
+    const authorizeUrlA = promptA.match(/https?:\/\/[^\s)]+/)![0];
     await completeAuthorization(authorizeUrlA, 'shared-company');
 
     // Employee B has never authorized this Company, even though A just did.
     const { text: promptB } = await callTool(TOKEN_B, 'shared-company');
     expect(promptB).toContain('you have not yet authorized');
 
-    const authorizeUrlB = promptB.match(/https?:\S+/)![0];
+    const authorizeUrlB = promptB.match(/https?:\/\/[^\s)]+/)![0];
     await completeAuthorization(authorizeUrlB, 'shared-company');
 
     const { text: secondB } = await callTool(TOKEN_B, 'shared-company');
@@ -271,11 +271,11 @@ describe('Company-authorization application (#8)', () => {
 
   it('does not leak Company state between two calls naming different Companies in one session', async () => {
     await completeAuthorization(
-      (await callTool(TOKEN_A, 'company-x')).text.match(/https?:\S+/)![0],
+      (await callTool(TOKEN_A, 'company-x')).text.match(/https?:\/\/[^\s)]+/)![0],
       'company-x'
     );
     await completeAuthorization(
-      (await callTool(TOKEN_A, 'company-y')).text.match(/https?:\S+/)![0],
+      (await callTool(TOKEN_A, 'company-y')).text.match(/https?:\/\/[^\s)]+/)![0],
       'company-y'
     );
 
@@ -302,8 +302,8 @@ describe('Company-authorization application (#8)', () => {
 
   describe('list_companies (issue #9)', () => {
     it('lists the Companies the calling employee has authorized, each with its name, realm_id and health', async () => {
-      await completeAuthorization((await callTool(TOKEN_A, 'company-a')).text.match(/https?:\S+/)![0], 'company-a');
-      await completeAuthorization((await callTool(TOKEN_A, 'company-b')).text.match(/https?:\S+/)![0], 'company-b');
+      await completeAuthorization((await callTool(TOKEN_A, 'company-a')).text.match(/https?:\/\/[^\s)]+/)![0], 'company-a');
+      await completeAuthorization((await callTool(TOKEN_A, 'company-b')).text.match(/https?:\/\/[^\s)]+/)![0], 'company-b');
 
       const { text } = await callListCompanies(TOKEN_A);
       const companies = JSON.parse(text);
@@ -315,14 +315,14 @@ describe('Company-authorization application (#8)', () => {
     });
 
     it('never lists a Company belonging to a different employee', async () => {
-      await completeAuthorization((await callTool(TOKEN_A, 'company-a')).text.match(/https?:\S+/)![0], 'company-a');
+      await completeAuthorization((await callTool(TOKEN_A, 'company-a')).text.match(/https?:\/\/[^\s)]+/)![0], 'company-a');
 
       const { text } = await callListCompanies(TOKEN_B);
       expect(JSON.parse(text)).toEqual([]);
     });
 
     it("reflects a Company's real grant health, not just that it was once authorized", async () => {
-      await completeAuthorization((await callTool(TOKEN_A, 'company-a')).text.match(/https?:\S+/)![0], 'company-a');
+      await completeAuthorization((await callTool(TOKEN_A, 'company-a')).text.match(/https?:\/\/[^\s)]+/)![0], 'company-a');
       await grantStore.forGrant({ employeeSub: EMPLOYEE_A.sub, realmId: 'company-a' }).recordHealth('unhealthy');
 
       const { text } = await callListCompanies(TOKEN_A);
