@@ -2,6 +2,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ToolDefinition } from "../types/tool-definition.js";
 import { z } from "zod";
 import { runWithCompanyContext } from "../context/company-context.js";
+import { getCurrentEmployeeContext } from "../context/employee-context.js";
+import { getCurrentRequestContext } from "../context/request-context.js";
+import { checkCompanyAuthorization, type CompanyAuthorizationDeps } from "../auth/company-authorization.js";
 
 /**
  * Defines CRUD categories for tools
@@ -175,6 +178,33 @@ function missingRealmIdResponse(toolName: string) {
   };
 }
 
+/**
+ * Company-authorization checkpoint (issue #8, ADR 0002). Set once by the HTTP
+ * entry point (see ../http/create-streamable-http-server.ts) once a grant
+ * store is available; left unset for stdio and for tests that don't exercise
+ * multi-tenant authorization, in which case the checkpoint below is skipped
+ * entirely — every existing single-tenant/stdio call is unaffected.
+ */
+let companyAuthorizationDeps: CompanyAuthorizationDeps | undefined;
+
+export function setCompanyAuthorizationDeps(deps: CompanyAuthorizationDeps | undefined): void {
+  companyAuthorizationDeps = deps;
+}
+
+/** Prompt to authorize, in place of a QuickBooks call, when the calling employee holds no grant for realmId yet. */
+function authorizationNeededResponse(toolName: string, realmId: string, authorizeUrl: string) {
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text:
+          `${toolName} could not run: you have not yet authorized QuickBooks Company "${realmId}". Open this ` +
+          `link, sign in with your Intuit account, and authorize this Company, then retry the call: ${authorizeUrl}`,
+      },
+    ],
+  };
+}
+
 export function RegisterTool<T extends z.ZodType<any, any>>(
   server: McpServer,
   toolDefinition: ToolDefinition<T>
@@ -221,6 +251,21 @@ export function RegisterTool<T extends z.ZodType<any, any>>(
 
     if (requiresRealmId && !realmId) {
       return missingRealmIdResponse(toolDefinition.name);
+    }
+
+    // The single checkpoint every Company resolution passes through
+    // (issue #8). Only applies when a Company was actually named and an
+    // authenticated employee is active (HTTP multi-tenant mode) — stdio and
+    // any call that fell back to the ambient/default Company are untouched.
+    if (realmId && companyAuthorizationDeps) {
+      const employee = getCurrentEmployeeContext();
+      if (employee) {
+        const origin = getCurrentRequestContext()?.origin ?? "";
+        const authorization = await checkCompanyAuthorization(companyAuthorizationDeps, employee, realmId, origin);
+        if (!authorization.authorized) {
+          return authorizationNeededResponse(toolDefinition.name, realmId, authorization.authorizeUrl);
+        }
+      }
     }
 
     const invoke = () => baseHandler(...callArgs);

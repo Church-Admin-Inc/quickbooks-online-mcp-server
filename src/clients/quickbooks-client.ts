@@ -5,6 +5,7 @@ import http from 'http';
 import crypto from 'crypto';
 import open from 'open';
 import { setDefaultCompanyContext, getCurrentCompanyContext } from '../context/company-context.js';
+import { getCurrentEmployeeContext } from '../context/employee-context.js';
 import { TOKEN_STORE_PATH, FileTokenGrantStore, type TokenGrantStore } from './token-grant-store.js';
 
 // Use override: true so that values from the token store always win over any
@@ -552,9 +553,18 @@ export class QuickbooksClient {
   // across 60-minute token boundaries without server restarts. The Company is
   // resolved from the ambient AsyncLocalStorage context (see
   // ../context/company-context.js) rather than closing over the module
-  // singleton directly, so a later ticket can route different Companies here
-  // without changing this signature or any handler.
+  // singleton directly. When an authenticated employee is active (HTTP
+  // multi-tenant mode, issue #8) resolution instead routes through
+  // multiTenantResolver, keyed by employee AND Company, so two employees
+  // sharing a Company use their own grants; single-tenant/stdio callers
+  // (no employee context) are entirely untouched below.
   static async getInstance(): Promise<QuickBooks> {
+    const employee = getCurrentEmployeeContext();
+    if (employee && multiTenantResolver) {
+      const { realmId } = getCurrentCompanyContext();
+      return multiTenantResolver.getInstance(employee.sub, realmId);
+    }
+
     const client = resolveClientForCurrentContext();
     if (client.isTokenExpiredOrExpiringSoon()) {
       await client.authenticate();
@@ -570,6 +580,12 @@ export class QuickbooksClient {
   // (e.g. POST /upload for binary attachments). Ensures token freshness on
   // every invocation, same as getInstance().
   static async getAuthCredentials(): Promise<{ accessToken: string; realmId: string; isSandbox: boolean }> {
+    const employee = getCurrentEmployeeContext();
+    if (employee && multiTenantResolver) {
+      const { realmId } = getCurrentCompanyContext();
+      return multiTenantResolver.getAuthCredentials(employee.sub, realmId);
+    }
+
     const client = resolveClientForCurrentContext();
     if (client.isTokenExpiredOrExpiringSoon() || !client.accessToken) {
       await client.authenticate();
@@ -600,6 +616,23 @@ export const quickbooksClient = new QuickbooksClient({
   environment: environment,
   redirectUri: redirect_uri,
 });
+
+// ── Multi-tenant resolution (issue #8) ────────────────────────────────────
+// Injected by the HTTP entry point (see ../clients/grant-quickbooks-clients.js
+// and ../http/create-streamable-http-server.ts) once an employee's grant
+// store is available. Left unset for stdio and for any test that doesn't
+// need it, in which case getInstance()/getAuthCredentials() fall straight
+// through to the single-tenant resolution below, unchanged.
+export interface MultiTenantQuickbooksResolver {
+  getInstance(employeeSub: string, realmId: string): Promise<QuickBooks>;
+  getAuthCredentials(employeeSub: string, realmId: string): Promise<{ accessToken: string; realmId: string; isSandbox: boolean }>;
+}
+
+let multiTenantResolver: MultiTenantQuickbooksResolver | undefined;
+
+export function setMultiTenantResolver(resolver: MultiTenantQuickbooksResolver | undefined): void {
+  multiTenantResolver = resolver;
+}
 
 // ── Company resolution ───────────────────────────────────────────────────
 // One Company today, keyed by a stable identifier (the configured realm ID,

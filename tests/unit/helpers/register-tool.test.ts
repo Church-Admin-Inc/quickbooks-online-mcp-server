@@ -5,6 +5,7 @@ import {
   knownParamKeys,
   permissiveParamsSchema,
   RegisterTool,
+  setCompanyAuthorizationDeps,
   unsupportedParamsWarning,
 } from "../../../src/helpers/register-tool";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -14,6 +15,10 @@ import {
   getCurrentCompanyContext,
   setDefaultCompanyContext,
 } from "../../../src/context/company-context";
+import { runWithEmployeeContext } from "../../../src/context/employee-context";
+import { runWithRequestContext } from "../../../src/context/request-context";
+import { CompanyAuthorizationStore } from "../../../src/auth/company-authorization";
+import type { GrantStore, GrantHandle, Grant } from "../../../src/clients/firestore-grant-store";
 
 // ── getCrudCategory ──────────────────────────────────────────────────────────
 // Verifies that every verb prefix maps to the correct CRUD category string.
@@ -381,5 +386,129 @@ describe("realm_id injection", () => {
     expect(result.content[0].text).toContain("ship_date");
     const call = handler.mock.calls[0] as any[];
     expect(call[0].params).toEqual({ customer_ref: "1" });
+  });
+});
+
+// ── Company-authorization checkpoint (#8) ───────────────────────────────────
+// The single checkpoint every Company resolution passes through: applies only
+// when a Company was named AND an authenticated employee is active (HTTP
+// multi-tenant mode); stdio and single-tenant calls (no employee context, or
+// no deps configured) are entirely unaffected.
+describe("Company-authorization checkpoint", () => {
+  const EMPLOYEE = { sub: "emp-1", email: "emp@example.com" };
+
+  const register = (name: string, schema: any, handler: any) => {
+    const server = { tool: jest.fn() } as unknown as McpServer;
+    RegisterTool(server, { name, description: "d", schema, handler } as any);
+    const call = (server.tool as jest.Mock).mock.calls[0] as any[];
+    return call?.[3] as any;
+  };
+
+  function fakeGrantStore(grant: Grant | undefined): GrantStore {
+    const handle: GrantHandle = {
+      key: { employeeSub: "irrelevant", realmId: "irrelevant" },
+      read: jest.fn(async () => grant),
+      create: jest.fn(),
+      refresh: jest.fn(),
+      recordUse: jest.fn(),
+      recordHealth: jest.fn(),
+    } as unknown as GrantHandle;
+    return { forGrant: jest.fn(() => handle) } as unknown as GrantStore;
+  }
+
+  const HEALTHY_GRANT: Grant = {
+    employeeSub: EMPLOYEE.sub,
+    realmId: "named-co",
+    refreshToken: "rt",
+    createdAt: new Date(),
+    lastRefreshedAt: new Date(),
+    lastUsedAt: undefined,
+    health: "healthy",
+  };
+
+  afterEach(() => setCompanyAuthorizationDeps(undefined));
+
+  it("prompts authorization, rather than erroring, when the calling employee holds no grant", async () => {
+    setCompanyAuthorizationDeps({ grantStore: fakeGrantStore(undefined), pending: new CompanyAuthorizationStore() });
+    const handler = jest.fn();
+    const registered = register("create_invoice", z.object({ customer_ref: z.string() }), handler);
+
+    const result = await runWithEmployeeContext(EMPLOYEE, () =>
+      runWithRequestContext({ origin: "https://qbo.example.com" }, () =>
+        registered({ params: { customer_ref: "1", realm_id: "named-co" } })
+      )
+    );
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(result.content[0].text).toContain("named-co");
+    expect(result.content[0].text).toContain("https://qbo.example.com/auth/quickbooks/authorize?token=");
+  });
+
+  it("invokes the handler when the calling employee already holds a healthy grant", async () => {
+    setCompanyAuthorizationDeps({ grantStore: fakeGrantStore(HEALTHY_GRANT), pending: new CompanyAuthorizationStore() });
+    const handler = jest.fn(async () => ({ content: [{ type: "text", text: "ok" }] }));
+    const registered = register("create_invoice", z.object({ customer_ref: z.string() }), handler);
+
+    const result = await runWithEmployeeContext(EMPLOYEE, () =>
+      runWithRequestContext({ origin: "https://qbo.example.com" }, () =>
+        registered({ params: { customer_ref: "1", realm_id: "named-co" } })
+      )
+    );
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(result.content[0].text).toBe("ok");
+  });
+
+  it("skips the checkpoint entirely when no employee context is active (stdio/single-tenant)", async () => {
+    const grantStore = fakeGrantStore(undefined);
+    setCompanyAuthorizationDeps({ grantStore, pending: new CompanyAuthorizationStore() });
+    const handler = jest.fn(async () => ({ content: [{ type: "text", text: "ok" }] }));
+    const registered = register("create_invoice", z.object({ customer_ref: z.string() }), handler);
+
+    const result = await registered({ params: { customer_ref: "1", realm_id: "named-co" } });
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(result.content[0].text).toBe("ok");
+    expect(grantStore.forGrant).not.toHaveBeenCalled();
+  });
+
+  it("skips the checkpoint entirely when no company-authorization deps are configured", async () => {
+    setCompanyAuthorizationDeps(undefined);
+    const handler = jest.fn(async () => ({ content: [{ type: "text", text: "ok" }] }));
+    const registered = register("create_invoice", z.object({ customer_ref: z.string() }), handler);
+
+    const result = await runWithEmployeeContext(EMPLOYEE, () =>
+      registered({ params: { customer_ref: "1", realm_id: "named-co" } })
+    );
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(result.content[0].text).toBe("ok");
+  });
+
+  it("still authorizes when no request context is active (origin falls back to empty string)", async () => {
+    setCompanyAuthorizationDeps({ grantStore: fakeGrantStore(HEALTHY_GRANT), pending: new CompanyAuthorizationStore() });
+    const handler = jest.fn(async () => ({ content: [{ type: "text", text: "ok" }] }));
+    const registered = register("create_invoice", z.object({ customer_ref: z.string() }), handler);
+
+    const result = await runWithEmployeeContext(EMPLOYEE, () =>
+      registered({ params: { customer_ref: "1", realm_id: "named-co" } })
+    );
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(result.content[0].text).toBe("ok");
+  });
+
+  it("checks the grant belonging to the calling employee for the Company actually named", async () => {
+    const grantStore = fakeGrantStore(undefined);
+    setCompanyAuthorizationDeps({ grantStore, pending: new CompanyAuthorizationStore() });
+    const registered = register("create_invoice", z.object({ customer_ref: z.string() }), jest.fn());
+
+    await runWithEmployeeContext(EMPLOYEE, () =>
+      runWithRequestContext({ origin: "https://qbo.example.com" }, () =>
+        registered({ params: { customer_ref: "1", realm_id: "named-co" } })
+      )
+    );
+
+    expect(grantStore.forGrant).toHaveBeenCalledWith({ employeeSub: EMPLOYEE.sub, realmId: "named-co" });
   });
 });
