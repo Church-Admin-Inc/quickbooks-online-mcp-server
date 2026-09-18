@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ToolDefinition } from "../types/tool-definition.js";
 import { z } from "zod";
+import { runWithCompanyContext } from "../context/company-context.js";
 
 /**
  * Defines CRUD categories for tools
@@ -112,33 +113,105 @@ export function unsupportedParamsWarning(
   );
 }
 
+/**
+ * realm_id injection (ADR 0001: one multi-realm connector, not one per
+ * Company).
+ *
+ * Every tool acts on one Company (QuickBooks realm). Rather than declaring
+ * `realm_id` on each tool schema by hand, it is injected here, the single
+ * chokepoint every tool passes through on its way to the server, and
+ * stripped before the handler runs so handlers still see exactly the
+ * parameters they declare. A write can never inherit an ambient or stale
+ * Company, so it is REQUIRED for WRITE/UPDATE/DELETE tools; reads may fall
+ * back to the session Company, so it is optional for them. When present, it
+ * routes the call to the named Company via the AsyncLocalStorage context in
+ * ../context/company-context.js.
+ */
+
+const REALM_ID_DESCRIPTION_REQUIRED =
+  "The Id of the QuickBooks Company (realm) to act on. REQUIRED: writes never fall back to a default " +
+  "or ambient Company.";
+const REALM_ID_DESCRIPTION_OPTIONAL =
+  "The Id of the QuickBooks Company (realm) to read from. Optional - falls back to the current " +
+  "session's Company when omitted.";
+
+/**
+ * Adds `realm_id` to a tool's params schema: required for writes, optional
+ * for reads. Every tool schema in this codebase is a `z.object(...)`, so
+ * `.extend()` is always available; there is no fallback for a non-object
+ * schema.
+ */
+function withRealmId<T extends z.ZodType<any, any>>(schema: T, category: CrudCategory): T {
+  const required = category !== CRUD_CATEGORY.READ;
+  const realmIdField = required
+    ? z.string().min(1, "realm_id is required").describe(REALM_ID_DESCRIPTION_REQUIRED)
+    : z.string().optional().describe(REALM_ID_DESCRIPTION_OPTIONAL);
+  return (schema as unknown as z.AnyZodObject).extend({ realm_id: realmIdField }) as unknown as T;
+}
+
+/** Appends a realm_id note to a tool's description so its meaning is unmissable. */
+function describeRealmId(description: string, category: CrudCategory): string {
+  const note =
+    category === CRUD_CATEGORY.READ
+      ? "Accepts realm_id naming which QuickBooks Company to read from; falls back to the session " +
+        "Company when omitted."
+      : "REQUIRES realm_id naming which QuickBooks Company to act on - there is no default Company " +
+        "for writes.";
+  return `${description} ${note}`;
+}
+
+/** Refusal for a write missing realm_id. Shaped like every handler's { content } response. */
+function missingRealmIdResponse(toolName: string) {
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text:
+          `${toolName} requires "realm_id" naming which QuickBooks Company to act on, and it was not ` +
+          `provided. A write is never allowed to fall back to an ambient or stale Company, so this call ` +
+          `was refused before reaching QuickBooks. Retry with the realm_id of the intended Company.`,
+      },
+    ],
+  };
+}
+
 export function RegisterTool<T extends z.ZodType<any, any>>(
   server: McpServer,
   toolDefinition: ToolDefinition<T>
 ) {
   if (isToolDisabled(toolDefinition.name)) return;
 
-  const known = knownParamKeys(toolDefinition.schema);
-  const paramsSchema = permissiveParamsSchema(toolDefinition.schema);
+  const category = getCrudCategory(toolDefinition.name);
+  const requiresRealmId = category !== CRUD_CATEGORY.READ;
+  const schemaWithRealmId = withRealmId(toolDefinition.schema, category);
+
+  const known = knownParamKeys(schemaWithRealmId);
+  const paramsSchema = permissiveParamsSchema(schemaWithRealmId);
   const baseHandler = toolDefinition.handler as unknown as (...a: any[]) => Promise<any>;
 
   const handler = (async (...a: any[]) => {
     let callArgs = a;
     let warning: string | null = null;
+    let realmId: string | undefined;
     try {
       const params = (a[0] as any)?.params;
       warning = unsupportedParamsWarning(toolDefinition.name, known, params);
-      if (warning && known && params && typeof params === "object" && !Array.isArray(params)) {
-        // Strip unknown keys before the handler runs. The permissive schema
-        // exists only so they can be SEEN; it must not change what reaches
-        // QuickBooks. Several search tools destructure their params with a rest
-        // element and pass the rest on as query criteria (search-bills,
-        // search-customers, search-estimates, search-vendors), so an unknown key
-        // left in place would become a real SQL filter - quietly changing which
-        // records the search returns while this warning claimed it was ignored.
+      if (params && typeof params === "object" && !Array.isArray(params)) {
+        const rawRealmId = (params as Record<string, unknown>).realm_id;
+        realmId = typeof rawRealmId === "string" && rawRealmId.length > 0 ? rawRealmId : undefined;
+
+        // Strip realm_id unconditionally (the handler never declares it) and,
+        // when the schema's shape is known, any other undeclared key too.
+        // This cannot wait until a warning is present: a rest-spread search
+        // tool (search-bills, search-customers, search-estimates,
+        // search-vendors) forwards its remainder straight into QuickBooks
+        // query criteria, so realm_id left in place would become a stray
+        // filter rather than routing information.
         const cleaned: Record<string, unknown> = {};
         for (const [k, v] of Object.entries(params as Record<string, unknown>)) {
-          if (known.has(k)) cleaned[k] = v;
+          if (k === "realm_id") continue;
+          if (known && !known.has(k)) continue;
+          cleaned[k] = v;
         }
         callArgs = [{ ...(a[0] as any), params: cleaned }, ...a.slice(1)];
       }
@@ -146,7 +219,12 @@ export function RegisterTool<T extends z.ZodType<any, any>>(
       /* diagnostics must never break a working call */
     }
 
-    const result = await baseHandler(...callArgs);
+    if (requiresRealmId && !realmId) {
+      return missingRealmIdResponse(toolDefinition.name);
+    }
+
+    const invoke = () => baseHandler(...callArgs);
+    const result = realmId ? await runWithCompanyContext({ realmId }, invoke) : await invoke();
 
     try {
       if (warning && result && Array.isArray(result.content)) {
@@ -159,5 +237,10 @@ export function RegisterTool<T extends z.ZodType<any, any>>(
     return result;
   }) as typeof toolDefinition.handler;
 
-  server.tool(toolDefinition.name, toolDefinition.description, { params: paramsSchema }, handler);
+  server.tool(
+    toolDefinition.name,
+    describeRealmId(toolDefinition.description, category),
+    { params: paramsSchema },
+    handler
+  );
 }
