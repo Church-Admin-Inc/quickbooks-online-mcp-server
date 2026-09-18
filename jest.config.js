@@ -28,9 +28,18 @@ export default {
     // it); these floors reflect what the new behavioral tests cover.
     './src/clients/quickbooks-client.ts': {
       branches: 45,
-      functions: 70,
+      functions: 65,
       lines: 70,
       statements: 70,
+    },
+    // Moved out of quickbooks-client.ts (see #3): the module-load-time throw for
+    // a non-absolute QUICKBOOKS_TOKEN_STORE_PATH, and the unlink-on-write-failure
+    // cleanup path in save(), aren't exercised by the behavioral tests above.
+    './src/clients/token-grant-store.ts': {
+      branches: 80,
+      functions: 100,
+      lines: 90,
+      statements: 90,
     },
     // update_account's normalizePatch carries a scalar field-type-map switch
     // whose `default` arm is unreachable (the map only ever maps to
