@@ -4,8 +4,9 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { createMcpServer } from "../server/qbo-mcp-server.js";
 import { runWithEmployeeContext } from "../context/employee-context.js";
 import { runWithRequestContext } from "../context/request-context.js";
-import { setCompanyAuthorizationDeps } from "../helpers/register-tool.js";
+import { setCompanyAuthorizationDeps, setAuditLogger } from "../helpers/register-tool.js";
 import { setListCompaniesDeps } from "../handlers/list-companies.handler.js";
+import { createDefaultAuditLog, type AuditLogger } from "../audit/audit-log.js";
 import {
   createDefaultOAuthDeps,
   requireBearerAuth,
@@ -37,6 +38,8 @@ export interface CreateStreamableHttpServerOptions {
   oauth?: OAuthDeps;
   /** Overridable for tests (see tests/integration/company-authorization-application.test.ts); defaults to an in-process grant store and the real Intuit Accounting OAuth flow (issue #8). */
   companyAuth?: CompanyOAuthDeps;
+  /** Overridable for tests (see tests/integration/audit-log-application.test.ts); defaults to an in-process, Firestore-shaped audit log (issue #10). */
+  audit?: AuditLogger;
 }
 
 /**
@@ -67,6 +70,7 @@ export function createStreamableHttpServer(
   const allowedHostnames = options.allowedHostnames ?? DEFAULT_ALLOWED_HOSTNAMES;
   const oauth = options.oauth ?? createDefaultOAuthDeps();
   const companyAuth = options.companyAuth ?? createDefaultCompanyOAuthDeps();
+  const audit = options.audit ?? createDefaultAuditLog();
 
   // Wires issue #8's Company-authorization checkpoint onto the one
   // chokepoint every tool call already passes through
@@ -80,6 +84,9 @@ export function createStreamableHttpServer(
   setCompanyAuthorizationDeps({ grantStore: companyAuth.grantStore, pending: companyAuth.pending });
   // list_companies (issue #9) reads the same grant store this checkpoint uses.
   setListCompaniesDeps({ grantStore: companyAuth.grantStore });
+  // Independent write audit trail (issue #10), same chokepoint as the
+  // Company-authorization checkpoint above.
+  setAuditLogger(audit);
 
   return http.createServer((req, res) => {
     void handleRequest(req, res, registerTools, allowedHostnames, oauth, companyAuth);

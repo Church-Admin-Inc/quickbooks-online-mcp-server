@@ -5,6 +5,7 @@ import { runWithCompanyContext } from "../context/company-context.js";
 import { getCurrentEmployeeContext } from "../context/employee-context.js";
 import { getCurrentRequestContext } from "../context/request-context.js";
 import { checkCompanyAuthorization, type CompanyAuthorizationDeps } from "../auth/company-authorization.js";
+import type { AuditLogger } from "../audit/audit-log.js";
 
 /**
  * Defines CRUD categories for tools
@@ -201,6 +202,19 @@ export function setCompanyAuthorizationDeps(deps: CompanyAuthorizationDeps | und
 }
 
 /**
+ * Write audit trail (issue #10). Set once by the HTTP entry point (see
+ * ../http/create-streamable-http-server.ts) alongside companyAuthorizationDeps
+ * above; left unset for stdio and for tests that don't exercise it, in which
+ * case logging below is skipped entirely - same fallback shape as the
+ * Company-authorization checkpoint.
+ */
+let auditLogger: AuditLogger | undefined;
+
+export function setAuditLogger(logger: AuditLogger | undefined): void {
+  auditLogger = logger;
+}
+
+/**
  * Prompt to authorize, in place of a QuickBooks call, when the calling
  * employee holds no healthy grant for realmId. `reason` (issue #9)
  * distinguishes a Company never authorized at all from one whose connection
@@ -253,6 +267,11 @@ export function RegisterTool<T extends z.ZodType<any, any>>(
     let callArgs = a;
     let warning: string | null = null;
     let realmId: string | undefined;
+    // Set alongside realmId, below, whenever the incoming params are an
+    // object: the same cleaned params callArgs is rebuilt with, kept here so
+    // the audit trail (issue #10) can log exactly what the handler receives
+    // without re-deriving or re-asserting it later.
+    let cleanedParams: Record<string, unknown> | undefined;
     try {
       const params = (a[0] as any)?.params;
       warning = unsupportedParamsWarning(toolDefinition.name, known, params);
@@ -273,6 +292,7 @@ export function RegisterTool<T extends z.ZodType<any, any>>(
           if (known && !known.has(k)) continue;
           cleaned[k] = v;
         }
+        cleanedParams = cleaned;
         callArgs = [{ ...(a[0] as any), params: cleaned }, ...a.slice(1)];
       }
     } catch {
@@ -300,6 +320,33 @@ export function RegisterTool<T extends z.ZodType<any, any>>(
             authorization.reason,
             authorization.companyName
           );
+        }
+      }
+    }
+
+    // Independent write audit trail (issue #10): recorded before the write is
+    // attempted, so a call that throws or a QuickBooks outage never leaves a
+    // write unaccounted for. Only WRITE/UPDATE/DELETE tools that actually
+    // named a Company are logged - a call refused above (missing realm_id, or
+    // failed authorization) never reaches QuickBooks and is not logged as a
+    // write. Requires an authenticated employee, same as the authorization
+    // checkpoint above: without one there is no identity to attribute the
+    // write to.
+    if (category !== CRUD_CATEGORY.READ && realmId && auditLogger) {
+      const employee = getCurrentEmployeeContext();
+      if (employee) {
+        try {
+          // realmId is only ever set alongside cleanedParams (above), so
+          // cleanedParams is always defined here.
+          await auditLogger.record({
+            employeeSub: employee.sub,
+            employeeEmail: employee.email,
+            realmId,
+            toolName: toolDefinition.name,
+            params: cleanedParams as Record<string, unknown>,
+          });
+        } catch {
+          /* logging a write must never prevent or alter the write itself */
         }
       }
     }

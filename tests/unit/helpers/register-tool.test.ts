@@ -5,9 +5,11 @@ import {
   knownParamKeys,
   permissiveParamsSchema,
   RegisterTool,
+  setAuditLogger,
   setCompanyAuthorizationDeps,
   unsupportedParamsWarning,
 } from "../../../src/helpers/register-tool";
+import type { AuditLogEntry, AuditLogger } from "../../../src/audit/audit-log";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { ToolDefinition } from "../../../src/types/tool-definition";
@@ -531,5 +533,174 @@ describe("Company-authorization checkpoint", () => {
     );
 
     expect(grantStore.forGrant).toHaveBeenCalledWith({ employeeSub: EMPLOYEE.sub, realmId: "named-co" });
+  });
+});
+
+// ── Write audit trail (#10) ──────────────────────────────────────────────────
+// Every WRITE/UPDATE/DELETE call that names a Company and runs under an
+// authenticated employee is logged before it executes; reads, calls refused
+// earlier (missing realm_id, failed authorization), and calls with no active
+// employee (stdio/single-tenant) are never logged.
+describe("write audit trail", () => {
+  const EMPLOYEE = { sub: "emp-1", email: "emp@example.com" };
+
+  const register = (name: string, schema: any, handler: any) => {
+    const server = { tool: jest.fn() } as unknown as McpServer;
+    RegisterTool(server, { name, description: "d", schema, handler } as any);
+    const call = (server.tool as jest.Mock).mock.calls[0] as any[];
+    return call?.[3] as any;
+  };
+
+  function fakeAuditLogger(): AuditLogger & { entries: AuditLogEntry[] } {
+    const entries: AuditLogEntry[] = [];
+    const record = jest.fn(async (entry: AuditLogEntry) => {
+      entries.push(entry);
+    });
+    return { entries, record };
+  }
+
+  afterEach(() => {
+    setAuditLogger(undefined);
+    setCompanyAuthorizationDeps(undefined);
+  });
+
+  it("logs employee identity, realm id, tool name and params before invoking the handler", async () => {
+    const logger = fakeAuditLogger();
+    setAuditLogger(logger);
+    const order: string[] = [];
+    (logger.record as jest.Mock).mockImplementationOnce(async (entry: unknown) => {
+      order.push("logged");
+      logger.entries.push(entry as AuditLogEntry);
+    });
+    const handler = jest.fn(async () => {
+      order.push("handled");
+      return { content: [{ type: "text", text: "ok" }] };
+    });
+    const registered = register("create_invoice", z.object({ customer_ref: z.string() }), handler);
+
+    await runWithEmployeeContext(EMPLOYEE, () =>
+      registered({ params: { customer_ref: "1", realm_id: "named-co" } })
+    );
+
+    expect(order).toEqual(["logged", "handled"]);
+    expect(logger.entries).toEqual([
+      {
+        employeeSub: EMPLOYEE.sub,
+        employeeEmail: EMPLOYEE.email,
+        realmId: "named-co",
+        toolName: "create_invoice",
+        params: { customer_ref: "1" },
+      },
+    ]);
+  });
+
+  it("logs a write even when the handler goes on to fail", async () => {
+    const logger = fakeAuditLogger();
+    setAuditLogger(logger);
+    const handler = jest.fn(async () => {
+      throw new Error("QuickBooks is down");
+    });
+    const registered = register("create_invoice", z.object({ customer_ref: z.string() }), handler);
+
+    await expect(
+      runWithEmployeeContext(EMPLOYEE, () =>
+        registered({ params: { customer_ref: "1", realm_id: "named-co" } })
+      )
+    ).rejects.toThrow("QuickBooks is down");
+
+    expect(logger.entries).toHaveLength(1);
+  });
+
+  it("logs UPDATE and DELETE calls too, but never a READ call", async () => {
+    const logger = fakeAuditLogger();
+    setAuditLogger(logger);
+    const handler = jest.fn(async () => ({ content: [{ type: "text", text: "ok" }] }));
+
+    await runWithEmployeeContext(EMPLOYEE, () =>
+      register("update_customer", z.object({ id: z.string() }), handler)({
+        params: { id: "1", realm_id: "named-co" },
+      })
+    );
+    await runWithEmployeeContext(EMPLOYEE, () =>
+      register("delete_bill", z.object({ id: z.string() }), handler)({
+        params: { id: "1", realm_id: "named-co" },
+      })
+    );
+    await runWithEmployeeContext(EMPLOYEE, () =>
+      register("get_invoice", z.object({ id: z.string() }), handler)({
+        params: { id: "1", realm_id: "named-co" },
+      })
+    );
+
+    expect(logger.entries.map((e) => e.toolName)).toEqual(["update_customer", "delete_bill"]);
+  });
+
+  it("never logs a write refused for missing realm_id", async () => {
+    const logger = fakeAuditLogger();
+    setAuditLogger(logger);
+    const handler = jest.fn();
+    const registered = register("create_invoice", z.object({ customer_ref: z.string() }), handler);
+
+    await runWithEmployeeContext(EMPLOYEE, () => registered({ params: { customer_ref: "1" } }));
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(logger.entries).toHaveLength(0);
+  });
+
+  it("never logs a write refused by the Company-authorization checkpoint", async () => {
+    const logger = fakeAuditLogger();
+    setAuditLogger(logger);
+    setCompanyAuthorizationDeps({
+      grantStore: { forGrant: () => ({ read: async () => undefined }) } as any,
+      pending: new CompanyAuthorizationStore(),
+    });
+    const handler = jest.fn();
+    const registered = register("create_invoice", z.object({ customer_ref: z.string() }), handler);
+
+    await runWithEmployeeContext(EMPLOYEE, () =>
+      runWithRequestContext({ origin: "https://qbo.example.com" }, () =>
+        registered({ params: { customer_ref: "1", realm_id: "named-co" } })
+      )
+    );
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(logger.entries).toHaveLength(0);
+  });
+
+  it("skips logging entirely when no employee context is active (stdio/single-tenant)", async () => {
+    const logger = fakeAuditLogger();
+    setAuditLogger(logger);
+    const handler = jest.fn(async () => ({ content: [{ type: "text", text: "ok" }] }));
+    const registered = register("create_invoice", z.object({ customer_ref: z.string() }), handler);
+
+    await registered({ params: { customer_ref: "1", realm_id: "named-co" } });
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(logger.entries).toHaveLength(0);
+  });
+
+  it("skips logging entirely when no audit logger is configured", async () => {
+    const handler = jest.fn(async () => ({ content: [{ type: "text", text: "ok" }] }));
+    const registered = register("create_invoice", z.object({ customer_ref: z.string() }), handler);
+
+    const result = await runWithEmployeeContext(EMPLOYEE, () =>
+      registered({ params: { customer_ref: "1", realm_id: "named-co" } })
+    );
+
+    expect(result.content[0].text).toBe("ok");
+  });
+
+  it("never blocks or alters the write when the audit logger itself fails", async () => {
+    const logger: AuditLogger = { record: jest.fn(async () => { throw new Error("audit store down"); }) };
+    setAuditLogger(logger);
+    const handler = jest.fn(async () => ({ content: [{ type: "text", text: "ok" }] }));
+    const registered = register("create_invoice", z.object({ customer_ref: z.string() }), handler);
+
+    const result = await runWithEmployeeContext(EMPLOYEE, () =>
+      registered({ params: { customer_ref: "1", realm_id: "named-co" } })
+    );
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(result.content[0].text).toBe("ok");
   });
 });
