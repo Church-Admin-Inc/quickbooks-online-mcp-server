@@ -17,6 +17,8 @@
         "lint": "eslint .",
         "auth": "node dist/auth-server.js",
         "start:http": "node dist/streamable-http-index.js",
+        "maintenance:daily": "node dist/grant-maintenance-index.js daily",
+        "maintenance:weekly": "node dist/grant-maintenance-index.js weekly",
         "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
         "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
         "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage"
