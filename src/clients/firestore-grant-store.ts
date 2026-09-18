@@ -184,20 +184,34 @@ export class FirestoreGrantStore implements GrantStore {
     return toGrant(stored);
   }
 
-  private async recordUse(key: GrantKey): Promise<void> {
-    const ref = this.docRef(key);
-    const snap = await ref.get();
-    if (!snap.exists) throw new GrantNotFoundError(key);
-    const stored = asStoredGrantData(snap.data());
-    await ref.set({ ...stored, lastUsedAt: new Date().toISOString() });
+  private recordUse(key: GrantKey): Promise<void> {
+    return this.patch(key, () => ({ lastUsedAt: new Date().toISOString() }));
   }
 
-  private async recordHealth(key: GrantKey, health: GrantHealth): Promise<void> {
+  private recordHealth(key: GrantKey, health: GrantHealth): Promise<void> {
+    return this.patch(key, () => ({ health }));
+  }
+
+  /**
+   * Reads the current grant, applies `updateFields`, and commits the merged
+   * result — inside the same transactional guard `refresh()` uses, so a
+   * recordUse()/recordHealth() call racing a concurrent refresh() can't read
+   * stale data and clobber the refresh's write.
+   */
+  private async patch(
+    key: GrantKey,
+    updateFields: (stored: StoredGrantData) => Partial<StoredGrantData>
+  ): Promise<void> {
     const ref = this.docRef(key);
-    const snap = await ref.get();
-    if (!snap.exists) throw new GrantNotFoundError(key);
-    const stored = asStoredGrantData(snap.data());
-    await ref.set({ ...stored, health });
+    await this.firestore.runTransaction(
+      async (tx) => {
+        const snap = await tx.get(ref);
+        if (!snap.exists) throw new GrantNotFoundError(key);
+        const stored = asStoredGrantData(snap.data());
+        tx.set(ref, { ...stored, ...updateFields(stored) });
+      },
+      { maxAttempts: 1 }
+    );
   }
 
   private refresh(
