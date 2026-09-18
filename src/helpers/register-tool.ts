@@ -240,9 +240,14 @@ function authorizationNeededResponse(
     content: [
       {
         type: "text" as const,
+        // Markdown link, not a bare URL: clients that render tool-result
+        // text as Markdown (e.g. claude.ai relaying this in its own reply)
+        // then show a clickable link rather than pasted text. There is no
+        // MCP content type for an actual "Connect" button/widget today -
+        // that needs an MCP App UI resource (tracked separately: #28).
         text:
-          `${toolName} could not run: ${explanation}. Open this link, sign in with your Intuit account, and ` +
-          `authorize this Company, then retry the call: ${authorizeUrl}`,
+          `${toolName} could not run: ${explanation}. [Authorize QuickBooks Company "${companyLabel}"](${authorizeUrl}) ` +
+          `by signing in with your Intuit account, then retry the call.`,
       },
     ],
   };
