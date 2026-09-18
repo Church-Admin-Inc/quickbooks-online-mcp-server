@@ -1,6 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CreateInvoiceTool } from "../tools/create-invoice.tool.js";
 import { RegisterTool } from "../helpers/register-tool.js";
+import { TOOL_GROUPS, ToolGroup, getEnabledToolGroups, selectEnabledTools } from "../config/tool-groups.js";
+import { ToolDefinition } from "../types/tool-definition.js";
 import { ReadInvoiceTool } from "../tools/read-invoice.tool.js";
 import { SearchInvoicesTool } from "../tools/search-invoices.tool.js";
 import { UpdateInvoiceTool } from "../tools/update-invoice.tool.js";
@@ -198,226 +200,242 @@ import { GetVendorExpensesTool } from "../tools/get-vendor-expenses.tool.js";
 import { GetVendorBalanceTool } from "../tools/get-vendor-balance.tool.js";
 
 /**
- * Registers every QuickBooks tool on the given MCP server. Shared by the
- * stdio entry point (src/index.ts) and the streamable HTTP application
+ * Every tool this server can register, tagged with the tool group (see
+ * ../config/tool-groups.ts) it belongs to. This is the single source of
+ * truth for both the full tool surface and its grouping - which tools
+ * `registerAllTools` actually registers is filtered from this list by the
+ * enabled tool groups.
+ */
+const TOOL_REGISTRY: ReadonlyArray<{ tool: ToolDefinition<any>; group: ToolGroup }> = [
+  // Customers
+  { tool: CreateCustomerTool, group: TOOL_GROUPS.CUSTOMERS },
+  { tool: GetCustomerTool, group: TOOL_GROUPS.CUSTOMERS },
+  { tool: UpdateCustomerTool, group: TOOL_GROUPS.CUSTOMERS },
+  { tool: DeleteCustomerTool, group: TOOL_GROUPS.CUSTOMERS },
+  { tool: SearchCustomersTool, group: TOOL_GROUPS.CUSTOMERS },
+
+  // Estimates
+  { tool: CreateEstimateTool, group: TOOL_GROUPS.ESTIMATES },
+  { tool: GetEstimateTool, group: TOOL_GROUPS.ESTIMATES },
+  { tool: UpdateEstimateTool, group: TOOL_GROUPS.ESTIMATES },
+  { tool: DeleteEstimateTool, group: TOOL_GROUPS.ESTIMATES },
+  { tool: SearchEstimatesTool, group: TOOL_GROUPS.ESTIMATES },
+
+  // Bills
+  { tool: CreateBillTool, group: TOOL_GROUPS.BILLS },
+  { tool: UpdateBillTool, group: TOOL_GROUPS.BILLS },
+  { tool: DeleteBillTool, group: TOOL_GROUPS.BILLS },
+  { tool: GetBillTool, group: TOOL_GROUPS.BILLS },
+  { tool: SearchBillsTool, group: TOOL_GROUPS.BILLS },
+
+  // Invoices
+  { tool: ReadInvoiceTool, group: TOOL_GROUPS.INVOICES },
+  { tool: SearchInvoicesTool, group: TOOL_GROUPS.INVOICES },
+  { tool: CreateInvoiceTool, group: TOOL_GROUPS.INVOICES },
+  { tool: UpdateInvoiceTool, group: TOOL_GROUPS.INVOICES },
+  { tool: DeleteInvoiceTool, group: TOOL_GROUPS.INVOICES },
+  { tool: GetInvoicePdfTool, group: TOOL_GROUPS.INVOICES },
+
+  // Chart of accounts
+  { tool: CreateAccountTool, group: TOOL_GROUPS.ACCOUNTS },
+  { tool: GetAccountTool, group: TOOL_GROUPS.ACCOUNTS },
+  { tool: UpdateAccountTool, group: TOOL_GROUPS.ACCOUNTS },
+  { tool: SearchAccountsTool, group: TOOL_GROUPS.ACCOUNTS },
+
+  // Items
+  { tool: ReadItemTool, group: TOOL_GROUPS.ITEMS },
+  { tool: SearchItemsTool, group: TOOL_GROUPS.ITEMS },
+  { tool: CreateItemTool, group: TOOL_GROUPS.ITEMS },
+  { tool: UpdateItemTool, group: TOOL_GROUPS.ITEMS },
+  { tool: DeleteItemTool, group: TOOL_GROUPS.ITEMS },
+
+  // Vendors
+  { tool: CreateVendorTool, group: TOOL_GROUPS.VENDORS },
+  { tool: UpdateVendorTool, group: TOOL_GROUPS.VENDORS },
+  { tool: DeleteVendorTool, group: TOOL_GROUPS.VENDORS },
+  { tool: GetVendorTool, group: TOOL_GROUPS.VENDORS },
+  { tool: SearchVendorsTool, group: TOOL_GROUPS.VENDORS },
+
+  // Employees
+  { tool: CreateEmployeeTool, group: TOOL_GROUPS.EMPLOYEES },
+  { tool: GetEmployeeTool, group: TOOL_GROUPS.EMPLOYEES },
+  { tool: UpdateEmployeeTool, group: TOOL_GROUPS.EMPLOYEES },
+  { tool: DeleteEmployeeTool, group: TOOL_GROUPS.EMPLOYEES },
+  { tool: SearchEmployeesTool, group: TOOL_GROUPS.EMPLOYEES },
+
+  // Journal entries
+  { tool: CreateJournalEntryTool, group: TOOL_GROUPS.JOURNAL_ENTRIES },
+  { tool: GetJournalEntryTool, group: TOOL_GROUPS.JOURNAL_ENTRIES },
+  { tool: UpdateJournalEntryTool, group: TOOL_GROUPS.JOURNAL_ENTRIES },
+  { tool: DeleteJournalEntryTool, group: TOOL_GROUPS.JOURNAL_ENTRIES },
+  { tool: SearchJournalEntriesTool, group: TOOL_GROUPS.JOURNAL_ENTRIES },
+
+  // Bill payments (part of the payments workflow)
+  { tool: CreateBillPaymentTool, group: TOOL_GROUPS.PAYMENTS },
+  { tool: GetBillPaymentTool, group: TOOL_GROUPS.PAYMENTS },
+  { tool: UpdateBillPaymentTool, group: TOOL_GROUPS.PAYMENTS },
+  { tool: DeleteBillPaymentTool, group: TOOL_GROUPS.PAYMENTS },
+  { tool: SearchBillPaymentsTool, group: TOOL_GROUPS.PAYMENTS },
+
+  // Purchases
+  { tool: CreatePurchaseTool, group: TOOL_GROUPS.PURCHASES },
+  { tool: GetPurchaseTool, group: TOOL_GROUPS.PURCHASES },
+  { tool: UpdatePurchaseTool, group: TOOL_GROUPS.PURCHASES },
+  { tool: DeletePurchaseTool, group: TOOL_GROUPS.PURCHASES },
+  { tool: SearchPurchasesTool, group: TOOL_GROUPS.PURCHASES },
+
+  // Payments
+  { tool: CreatePaymentTool, group: TOOL_GROUPS.PAYMENTS },
+  { tool: GetPaymentTool, group: TOOL_GROUPS.PAYMENTS },
+  { tool: UpdatePaymentTool, group: TOOL_GROUPS.PAYMENTS },
+  { tool: DeletePaymentTool, group: TOOL_GROUPS.PAYMENTS },
+  { tool: SearchPaymentsTool, group: TOOL_GROUPS.PAYMENTS },
+
+  // Sales receipts
+  { tool: CreateSalesReceiptTool, group: TOOL_GROUPS.SALES_RECEIPTS },
+  { tool: GetSalesReceiptTool, group: TOOL_GROUPS.SALES_RECEIPTS },
+  { tool: UpdateSalesReceiptTool, group: TOOL_GROUPS.SALES_RECEIPTS },
+  { tool: DeleteSalesReceiptTool, group: TOOL_GROUPS.SALES_RECEIPTS },
+  { tool: SearchSalesReceiptsTool, group: TOOL_GROUPS.SALES_RECEIPTS },
+
+  // Credit memos
+  { tool: CreateCreditMemoTool, group: TOOL_GROUPS.CREDIT_MEMOS },
+  { tool: GetCreditMemoTool, group: TOOL_GROUPS.CREDIT_MEMOS },
+  { tool: UpdateCreditMemoTool, group: TOOL_GROUPS.CREDIT_MEMOS },
+  { tool: DeleteCreditMemoTool, group: TOOL_GROUPS.CREDIT_MEMOS },
+  { tool: SearchCreditMemosTool, group: TOOL_GROUPS.CREDIT_MEMOS },
+
+  // Refund receipts
+  { tool: CreateRefundReceiptTool, group: TOOL_GROUPS.REFUND_RECEIPTS },
+  { tool: GetRefundReceiptTool, group: TOOL_GROUPS.REFUND_RECEIPTS },
+  { tool: UpdateRefundReceiptTool, group: TOOL_GROUPS.REFUND_RECEIPTS },
+  { tool: DeleteRefundReceiptTool, group: TOOL_GROUPS.REFUND_RECEIPTS },
+  { tool: SearchRefundReceiptsTool, group: TOOL_GROUPS.REFUND_RECEIPTS },
+
+  // Purchase orders
+  { tool: CreatePurchaseOrderTool, group: TOOL_GROUPS.PURCHASE_ORDERS },
+  { tool: GetPurchaseOrderTool, group: TOOL_GROUPS.PURCHASE_ORDERS },
+  { tool: UpdatePurchaseOrderTool, group: TOOL_GROUPS.PURCHASE_ORDERS },
+  { tool: DeletePurchaseOrderTool, group: TOOL_GROUPS.PURCHASE_ORDERS },
+  { tool: SearchPurchaseOrdersTool, group: TOOL_GROUPS.PURCHASE_ORDERS },
+
+  // Vendor credits
+  { tool: CreateVendorCreditTool, group: TOOL_GROUPS.VENDOR_CREDITS },
+  { tool: GetVendorCreditTool, group: TOOL_GROUPS.VENDOR_CREDITS },
+  { tool: UpdateVendorCreditTool, group: TOOL_GROUPS.VENDOR_CREDITS },
+  { tool: DeleteVendorCreditTool, group: TOOL_GROUPS.VENDOR_CREDITS },
+  { tool: SearchVendorCreditsTool, group: TOOL_GROUPS.VENDOR_CREDITS },
+
+  // Deposits
+  { tool: CreateDepositTool, group: TOOL_GROUPS.DEPOSITS },
+  { tool: GetDepositTool, group: TOOL_GROUPS.DEPOSITS },
+  { tool: UpdateDepositTool, group: TOOL_GROUPS.DEPOSITS },
+  { tool: DeleteDepositTool, group: TOOL_GROUPS.DEPOSITS },
+  { tool: SearchDepositsTool, group: TOOL_GROUPS.DEPOSITS },
+
+  // Transfers
+  { tool: CreateTransferTool, group: TOOL_GROUPS.TRANSFERS },
+  { tool: GetTransferTool, group: TOOL_GROUPS.TRANSFERS },
+  { tool: UpdateTransferTool, group: TOOL_GROUPS.TRANSFERS },
+  { tool: DeleteTransferTool, group: TOOL_GROUPS.TRANSFERS },
+  { tool: SearchTransfersTool, group: TOOL_GROUPS.TRANSFERS },
+
+  // Time activities
+  { tool: CreateTimeActivityTool, group: TOOL_GROUPS.TIME_ACTIVITIES },
+  { tool: GetTimeActivityTool, group: TOOL_GROUPS.TIME_ACTIVITIES },
+  { tool: UpdateTimeActivityTool, group: TOOL_GROUPS.TIME_ACTIVITIES },
+  { tool: DeleteTimeActivityTool, group: TOOL_GROUPS.TIME_ACTIVITIES },
+  { tool: SearchTimeActivitiesTool, group: TOOL_GROUPS.TIME_ACTIVITIES },
+
+  // Classes (load-bearing for fund accounting - enabled by default)
+  { tool: CreateClassTool, group: TOOL_GROUPS.CLASSES },
+  { tool: GetClassTool, group: TOOL_GROUPS.CLASSES },
+  { tool: UpdateClassTool, group: TOOL_GROUPS.CLASSES },
+  { tool: SearchClassesTool, group: TOOL_GROUPS.CLASSES },
+
+  // Departments (load-bearing for fund accounting - enabled by default)
+  { tool: CreateDepartmentTool, group: TOOL_GROUPS.DEPARTMENTS },
+  { tool: GetDepartmentTool, group: TOOL_GROUPS.DEPARTMENTS },
+  { tool: UpdateDepartmentTool, group: TOOL_GROUPS.DEPARTMENTS },
+  { tool: SearchDepartmentsTool, group: TOOL_GROUPS.DEPARTMENTS },
+
+  // Terms
+  { tool: CreateTermTool, group: TOOL_GROUPS.TERMS },
+  { tool: GetTermTool, group: TOOL_GROUPS.TERMS },
+  { tool: UpdateTermTool, group: TOOL_GROUPS.TERMS },
+  { tool: SearchTermsTool, group: TOOL_GROUPS.TERMS },
+
+  // Payment methods
+  { tool: CreatePaymentMethodTool, group: TOOL_GROUPS.PAYMENT_METHODS },
+  { tool: GetPaymentMethodTool, group: TOOL_GROUPS.PAYMENT_METHODS },
+  { tool: UpdatePaymentMethodTool, group: TOOL_GROUPS.PAYMENT_METHODS },
+  { tool: SearchPaymentMethodsTool, group: TOOL_GROUPS.PAYMENT_METHODS },
+
+  // Budgets (read-only)
+  { tool: SearchBudgetsTool, group: TOOL_GROUPS.BUDGETS },
+
+  // Tax codes
+  { tool: GetTaxCodeTool, group: TOOL_GROUPS.TAX_CODES },
+  { tool: SearchTaxCodesTool, group: TOOL_GROUPS.TAX_CODES },
+
+  // Tax rates
+  { tool: GetTaxRateTool, group: TOOL_GROUPS.TAX_RATES },
+  { tool: SearchTaxRatesTool, group: TOOL_GROUPS.TAX_RATES },
+
+  // Tax agencies
+  { tool: GetTaxAgencyTool, group: TOOL_GROUPS.TAX_AGENCIES },
+  { tool: SearchTaxAgenciesTool, group: TOOL_GROUPS.TAX_AGENCIES },
+
+  // Company info
+  { tool: GetCompanyInfoTool, group: TOOL_GROUPS.COMPANY_INFO },
+  { tool: UpdateCompanyInfoTool, group: TOOL_GROUPS.COMPANY_INFO },
+
+  // Preferences
+  { tool: GetPreferencesTool, group: TOOL_GROUPS.PREFERENCES },
+
+  // Attachables
+  { tool: CreateAttachableTool, group: TOOL_GROUPS.ATTACHABLES },
+  { tool: GetAttachableTool, group: TOOL_GROUPS.ATTACHABLES },
+  { tool: UpdateAttachableTool, group: TOOL_GROUPS.ATTACHABLES },
+  { tool: DeleteAttachableTool, group: TOOL_GROUPS.ATTACHABLES },
+  { tool: SearchAttachablesTool, group: TOOL_GROUPS.ATTACHABLES },
+
+  // Financial reports
+  { tool: GetBalanceSheetTool, group: TOOL_GROUPS.REPORTS },
+  { tool: GetProfitAndLossTool, group: TOOL_GROUPS.REPORTS },
+  { tool: GetCashFlowTool, group: TOOL_GROUPS.REPORTS },
+  { tool: GetTrialBalanceTool, group: TOOL_GROUPS.REPORTS },
+  { tool: GetGeneralLedgerTool, group: TOOL_GROUPS.REPORTS },
+
+  // Sales/AR reports
+  { tool: GetCustomerSalesTool, group: TOOL_GROUPS.REPORTS },
+  { tool: GetAgedReceivablesTool, group: TOOL_GROUPS.REPORTS },
+  { tool: GetCustomerBalanceTool, group: TOOL_GROUPS.REPORTS },
+
+  // Expense/AP reports
+  { tool: GetAgedPayablesTool, group: TOOL_GROUPS.REPORTS },
+  { tool: GetVendorExpensesTool, group: TOOL_GROUPS.REPORTS },
+  { tool: GetVendorBalanceTool, group: TOOL_GROUPS.REPORTS },
+];
+
+/**
+ * Registers every enabled QuickBooks tool on the given MCP server. Shared by
+ * the stdio entry point (src/index.ts) and the streamable HTTP application
  * (src/http/create-streamable-http-server.ts) so both transports expose the
  * same tool surface from one place.
+ *
+ * Which tools are enabled is configuration (issue #11): TOOL_REGISTRY tags
+ * every tool with a group, and only tools in an enabled group (see
+ * ../config/tool-groups.ts, QUICKBOOKS_ENABLED_TOOL_GROUPS) reach
+ * RegisterTool - a disabled tool's definition is never handed to the MCP
+ * SDK, so it is absent from the tool listing entirely, not merely hidden
+ * behind a runtime check. The existing per-CRUD-category disable flags
+ * (QUICKBOOKS_DISABLE_WRITE/UPDATE/DELETE) are unaffected: they are still
+ * enforced inside RegisterTool itself for every tool that reaches it.
  */
 export function registerAllTools(server: McpServer): void {
-  // Add tools for customers
-  RegisterTool(server, CreateCustomerTool);
-  RegisterTool(server, GetCustomerTool);
-  RegisterTool(server, UpdateCustomerTool);
-  RegisterTool(server, DeleteCustomerTool);
-  RegisterTool(server, SearchCustomersTool);
-  // Add tools for estimates
-  RegisterTool(server, CreateEstimateTool);
-  RegisterTool(server, GetEstimateTool);
-  RegisterTool(server, UpdateEstimateTool);
-  RegisterTool(server, DeleteEstimateTool);
-  RegisterTool(server, SearchEstimatesTool);
-
-  // Add tools for bills
-  RegisterTool(server, CreateBillTool);
-  RegisterTool(server, UpdateBillTool);
-  RegisterTool(server, DeleteBillTool);
-  RegisterTool(server, GetBillTool);
-  RegisterTool(server, SearchBillsTool);
-
-  // Add tool to read a single invoice
-  RegisterTool(server, ReadInvoiceTool);
-
-  // Add tool to search invoices
-  RegisterTool(server, SearchInvoicesTool);
-
-  // Add tool to create invoice
-  RegisterTool(server, CreateInvoiceTool);
-
-  // Add tool to update invoice
-  RegisterTool(server, UpdateInvoiceTool);
-  RegisterTool(server, DeleteInvoiceTool);
-
-  // Add tool to download invoice PDF
-  RegisterTool(server, GetInvoicePdfTool);
-
-  // Chart of accounts tools
-  RegisterTool(server, CreateAccountTool);
-  RegisterTool(server, GetAccountTool);
-  RegisterTool(server, UpdateAccountTool);
-  RegisterTool(server, SearchAccountsTool);
-
-  // Add tool to read item
-  RegisterTool(server, ReadItemTool);
-  RegisterTool(server, SearchItemsTool);
-  RegisterTool(server, CreateItemTool);
-  RegisterTool(server, UpdateItemTool);
-  RegisterTool(server, DeleteItemTool);
-
-  // Add tools for vendors
-  RegisterTool(server, CreateVendorTool);
-  RegisterTool(server, UpdateVendorTool);
-  RegisterTool(server, DeleteVendorTool);
-  RegisterTool(server, GetVendorTool);
-  RegisterTool(server, SearchVendorsTool);
-
-  // Add tools for employees
-  RegisterTool(server, CreateEmployeeTool);
-  RegisterTool(server, GetEmployeeTool);
-  RegisterTool(server, UpdateEmployeeTool);
-  RegisterTool(server, DeleteEmployeeTool);
-  RegisterTool(server, SearchEmployeesTool);
-
-  // Add tools for journal entries
-  RegisterTool(server, CreateJournalEntryTool);
-  RegisterTool(server, GetJournalEntryTool);
-  RegisterTool(server, UpdateJournalEntryTool);
-  RegisterTool(server, DeleteJournalEntryTool);
-  RegisterTool(server, SearchJournalEntriesTool);
-
-  // Add tools for bill payments
-  RegisterTool(server, CreateBillPaymentTool);
-  RegisterTool(server, GetBillPaymentTool);
-  RegisterTool(server, UpdateBillPaymentTool);
-  RegisterTool(server, DeleteBillPaymentTool);
-  RegisterTool(server, SearchBillPaymentsTool);
-
-  // Add tools for purchases
-  RegisterTool(server, CreatePurchaseTool);
-  RegisterTool(server, GetPurchaseTool);
-  RegisterTool(server, UpdatePurchaseTool);
-  RegisterTool(server, DeletePurchaseTool);
-  RegisterTool(server, SearchPurchasesTool);
-
-  // Add tools for payments
-  RegisterTool(server, CreatePaymentTool);
-  RegisterTool(server, GetPaymentTool);
-  RegisterTool(server, UpdatePaymentTool);
-  RegisterTool(server, DeletePaymentTool);
-  RegisterTool(server, SearchPaymentsTool);
-
-  // Add tools for sales receipts
-  RegisterTool(server, CreateSalesReceiptTool);
-  RegisterTool(server, GetSalesReceiptTool);
-  RegisterTool(server, UpdateSalesReceiptTool);
-  RegisterTool(server, DeleteSalesReceiptTool);
-  RegisterTool(server, SearchSalesReceiptsTool);
-
-  // Add tools for credit memos
-  RegisterTool(server, CreateCreditMemoTool);
-  RegisterTool(server, GetCreditMemoTool);
-  RegisterTool(server, UpdateCreditMemoTool);
-  RegisterTool(server, DeleteCreditMemoTool);
-  RegisterTool(server, SearchCreditMemosTool);
-
-  // Add tools for refund receipts
-  RegisterTool(server, CreateRefundReceiptTool);
-  RegisterTool(server, GetRefundReceiptTool);
-  RegisterTool(server, UpdateRefundReceiptTool);
-  RegisterTool(server, DeleteRefundReceiptTool);
-  RegisterTool(server, SearchRefundReceiptsTool);
-
-  // Add tools for purchase orders
-  RegisterTool(server, CreatePurchaseOrderTool);
-  RegisterTool(server, GetPurchaseOrderTool);
-  RegisterTool(server, UpdatePurchaseOrderTool);
-  RegisterTool(server, DeletePurchaseOrderTool);
-  RegisterTool(server, SearchPurchaseOrdersTool);
-
-  // Add tools for vendor credits
-  RegisterTool(server, CreateVendorCreditTool);
-  RegisterTool(server, GetVendorCreditTool);
-  RegisterTool(server, UpdateVendorCreditTool);
-  RegisterTool(server, DeleteVendorCreditTool);
-  RegisterTool(server, SearchVendorCreditsTool);
-
-  // Add tools for deposits
-  RegisterTool(server, CreateDepositTool);
-  RegisterTool(server, GetDepositTool);
-  RegisterTool(server, UpdateDepositTool);
-  RegisterTool(server, DeleteDepositTool);
-  RegisterTool(server, SearchDepositsTool);
-
-  // Add tools for transfers
-  RegisterTool(server, CreateTransferTool);
-  RegisterTool(server, GetTransferTool);
-  RegisterTool(server, UpdateTransferTool);
-  RegisterTool(server, DeleteTransferTool);
-  RegisterTool(server, SearchTransfersTool);
-
-  // Add tools for time activities
-  RegisterTool(server, CreateTimeActivityTool);
-  RegisterTool(server, GetTimeActivityTool);
-  RegisterTool(server, UpdateTimeActivityTool);
-  RegisterTool(server, DeleteTimeActivityTool);
-  RegisterTool(server, SearchTimeActivitiesTool);
-
-  // Add tools for classes
-  RegisterTool(server, CreateClassTool);
-  RegisterTool(server, GetClassTool);
-  RegisterTool(server, UpdateClassTool);
-  RegisterTool(server, SearchClassesTool);
-
-  // Add tools for departments
-  RegisterTool(server, CreateDepartmentTool);
-  RegisterTool(server, GetDepartmentTool);
-  RegisterTool(server, UpdateDepartmentTool);
-  RegisterTool(server, SearchDepartmentsTool);
-
-  // Add tools for terms
-  RegisterTool(server, CreateTermTool);
-  RegisterTool(server, GetTermTool);
-  RegisterTool(server, UpdateTermTool);
-  RegisterTool(server, SearchTermsTool);
-
-  // Add tools for payment methods
-  RegisterTool(server, CreatePaymentMethodTool);
-  RegisterTool(server, GetPaymentMethodTool);
-  RegisterTool(server, UpdatePaymentMethodTool);
-  RegisterTool(server, SearchPaymentMethodsTool);
-
-  // Add tools for budgets (read-only)
-  RegisterTool(server, SearchBudgetsTool);
-
-  // Add tools for tax codes
-  RegisterTool(server, GetTaxCodeTool);
-  RegisterTool(server, SearchTaxCodesTool);
-
-  // Add tools for tax rates
-  RegisterTool(server, GetTaxRateTool);
-  RegisterTool(server, SearchTaxRatesTool);
-
-  // Add tools for tax agencies
-  RegisterTool(server, GetTaxAgencyTool);
-  RegisterTool(server, SearchTaxAgenciesTool);
-
-  // Add tools for company info
-  RegisterTool(server, GetCompanyInfoTool);
-  RegisterTool(server, UpdateCompanyInfoTool);
-
-  // Add tools for preferences
-  RegisterTool(server, GetPreferencesTool);
-
-  // Add tools for attachables
-  RegisterTool(server, CreateAttachableTool);
-  RegisterTool(server, GetAttachableTool);
-  RegisterTool(server, UpdateAttachableTool);
-  RegisterTool(server, DeleteAttachableTool);
-  RegisterTool(server, SearchAttachablesTool);
-
-  // Add financial report tools
-  RegisterTool(server, GetBalanceSheetTool);
-  RegisterTool(server, GetProfitAndLossTool);
-  RegisterTool(server, GetCashFlowTool);
-  RegisterTool(server, GetTrialBalanceTool);
-  RegisterTool(server, GetGeneralLedgerTool);
-
-  // Add sales/AR report tools
-  RegisterTool(server, GetCustomerSalesTool);
-  RegisterTool(server, GetAgedReceivablesTool);
-  RegisterTool(server, GetCustomerBalanceTool);
-
-  // Add expense/AP report tools
-  RegisterTool(server, GetAgedPayablesTool);
-  RegisterTool(server, GetVendorExpensesTool);
-  RegisterTool(server, GetVendorBalanceTool);
+  const enabledGroups = getEnabledToolGroups();
+  for (const tool of selectEnabledTools(TOOL_REGISTRY, enabledGroups)) {
+    RegisterTool(server, tool);
+  }
 }

@@ -25,7 +25,10 @@ function namesOf(regex: RegExp): string[] {
 
 describe('registerAllTools extraction', () => {
   const imported = namesOf(/import \{ (\w+Tool) \} from "\.\.\/tools\//g);
-  const registered = namesOf(/RegisterTool\(server, (\w+)\);/g);
+  // Tools are registered indirectly: every tool that should be registerable
+  // is tagged with a group in TOOL_REGISTRY (issue #11), and registerAllTools
+  // filters that list by the enabled tool groups before calling RegisterTool.
+  const registryEntries = namesOf(/\{ tool: (\w+Tool), group: TOOL_GROUPS\.\w+ \}/g);
 
   it('imports at least the pre-refactor tool count', () => {
     // Guards against an accidental mass-deletion during a future edit; not
@@ -33,12 +36,17 @@ describe('registerAllTools extraction', () => {
     expect(imported.length).toBeGreaterThanOrEqual(142);
   });
 
-  it('registers every imported tool exactly once, and nothing else', () => {
-    expect(new Set(registered)).toEqual(new Set(imported));
-    expect(registered.length).toBe(imported.length);
+  it('tags every imported tool with a group exactly once, and nothing else', () => {
+    expect(new Set(registryEntries)).toEqual(new Set(imported));
+    expect(registryEntries.length).toBe(imported.length);
   });
 
   it('has no duplicate imports', () => {
     expect(new Set(imported).size).toBe(imported.length);
+  });
+
+  it('calls RegisterTool exactly once, inside the enabled-groups filter loop', () => {
+    const registerToolCalls = [...source.matchAll(/RegisterTool\(/g)];
+    expect(registerToolCalls.length).toBe(1);
   });
 });
