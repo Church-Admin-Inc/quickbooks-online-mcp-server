@@ -23,9 +23,36 @@ jest.unstable_mockModule('../../src/clients/quickbooks-client', () => ({
 const { createStreamableHttpServer, MCP_HTTP_PATH } = await import('../../src/http/create-streamable-http-server');
 const { RegisterTool } = await import('../../src/helpers/register-tool');
 const { GetCompanyInfoTool } = await import('../../src/tools/get-company-info.tool');
+const { OAuthStore } = await import('../../src/auth/oauth-store');
 const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
 const { StreamableHTTPClientTransport } = await import('@modelcontextprotocol/sdk/client/streamableHttp.js');
 const { StreamableHTTPServerTransport } = await import('@modelcontextprotocol/sdk/server/streamableHttp.js');
+
+// This suite covers HTTP wiring (routing, statelessness, host validation),
+// not OAuth (see tests/integration/oauth-http-application.test.ts) — so
+// every /mcp request here authenticates with a fixed bearer token against a
+// store seeded with exactly that one token, rather than driving the full
+// federated-login flow.
+const TEST_BEARER_TOKEN = 'test-bearer-token';
+const oauthStore = new OAuthStore();
+(oauthStore as unknown as { resolveAccessToken: (token: string) => { sub: string; email: string } | undefined }).resolveAccessToken = (
+  token: string
+) => (token === TEST_BEARER_TOKEN ? { sub: 'test-sub', email: 'test@example.com' } : undefined);
+const testOAuthDeps = {
+  store: oauthStore,
+  identityProvider: {
+    authorizationUrl: () => {
+      throw new Error('not used in this suite');
+    },
+    exchangeCodeForIdentity: async () => {
+      throw new Error('not used in this suite');
+    },
+  },
+  loadConfig: () => {
+    throw new Error('not used in this suite');
+  },
+};
+const AUTH_HEADER = { Authorization: `Bearer ${TEST_BEARER_TOKEN}` };
 
 // The full production tool surface (registerAllTools) imports all 145 tool
 // modules; importing it here would make this the first test to load them
@@ -51,7 +78,8 @@ async function listen(server: http.Server): Promise<URL> {
 // match the address actually being connected to (the DNS-rebinding shape).
 async function postWithHost(
   port: number,
-  hostHeader: string
+  hostHeader: string,
+  extraHeaders: Record<string, string> = {}
 ): Promise<{ status: number; body: string }> {
   const httpModule = await import('node:http');
   return new Promise((resolve, reject) => {
@@ -65,6 +93,7 @@ async function postWithHost(
           Host: hostHeader,
           'Content-Type': 'application/json',
           Accept: 'application/json, text/event-stream',
+          ...extraHeaders,
         },
       },
       (res) => {
@@ -92,7 +121,7 @@ describe('streamable HTTP application', () => {
   });
 
   it('serves a real tool call end to end over HTTP', async () => {
-    server = createStreamableHttpServer(registerTestTools);
+    server = createStreamableHttpServer(registerTestTools, { oauth: testOAuthDeps });
     const url = await listen(server);
 
     mockQuickBooksInstance.getCompanyInfo.mockImplementation((_id: any, cb: any) => {
@@ -100,7 +129,7 @@ describe('streamable HTTP application', () => {
     });
 
     const client = new Client({ name: 'test-client', version: '1.0.0' });
-    const transport = new StreamableHTTPClientTransport(url);
+    const transport = new StreamableHTTPClientTransport(url, { requestInit: { headers: AUTH_HEADER } });
 
     await client.connect(transport);
     try {
@@ -117,7 +146,7 @@ describe('streamable HTTP application', () => {
   });
 
   it('surfaces a QuickBooks error from a real tool call as a tool error', async () => {
-    server = createStreamableHttpServer(registerTestTools);
+    server = createStreamableHttpServer(registerTestTools, { oauth: testOAuthDeps });
     const url = await listen(server);
 
     mockQuickBooksInstance.getCompanyInfo.mockImplementation((_id: any, cb: any) => {
@@ -125,7 +154,7 @@ describe('streamable HTTP application', () => {
     });
 
     const client = new Client({ name: 'test-client', version: '1.0.0' });
-    const transport = new StreamableHTTPClientTransport(url);
+    const transport = new StreamableHTTPClientTransport(url, { requestInit: { headers: AUTH_HEADER } });
 
     await client.connect(transport);
     try {
@@ -138,15 +167,18 @@ describe('streamable HTTP application', () => {
   });
 
   it('answers 500 with a JSON-RPC error when the application fails to build a response', async () => {
-    server = createStreamableHttpServer(() => {
-      throw new Error('registration boom');
-    });
+    server = createStreamableHttpServer(
+      () => {
+        throw new Error('registration boom');
+      },
+      { oauth: testOAuthDeps }
+    );
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const { port } = server.address() as AddressInfo;
 
     const response = await fetch(`http://127.0.0.1:${port}${MCP_HTTP_PATH}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', ...AUTH_HEADER },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
     });
 
@@ -163,14 +195,14 @@ describe('streamable HTTP application', () => {
         throw new Error('mid-response boom');
       });
 
-    server = createStreamableHttpServer(registerTestTools);
+    server = createStreamableHttpServer(registerTestTools, { oauth: testOAuthDeps });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const { port } = server.address() as AddressInfo;
 
     try {
       const response = await fetch(`http://127.0.0.1:${port}${MCP_HTTP_PATH}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', ...AUTH_HEADER },
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
       });
 
@@ -182,7 +214,7 @@ describe('streamable HTTP application', () => {
   });
 
   it('rejects a request whose Host header is not in the allowlist (DNS-rebinding protection)', async () => {
-    server = createStreamableHttpServer(registerTestTools);
+    server = createStreamableHttpServer(registerTestTools, { oauth: testOAuthDeps });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const { port } = server.address() as AddressInfo;
 
@@ -193,7 +225,7 @@ describe('streamable HTTP application', () => {
   });
 
   it('rejects a request with no Host header at all', async () => {
-    server = createStreamableHttpServer(registerTestTools);
+    server = createStreamableHttpServer(registerTestTools, { oauth: testOAuthDeps });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const { port } = server.address() as AddressInfo;
 
@@ -215,7 +247,7 @@ describe('streamable HTTP application', () => {
   });
 
   it('rejects a malformed Host header the same as a disallowed one', async () => {
-    server = createStreamableHttpServer(registerTestTools);
+    server = createStreamableHttpServer(registerTestTools, { oauth: testOAuthDeps });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const { port } = server.address() as AddressInfo;
 
@@ -226,7 +258,7 @@ describe('streamable HTTP application', () => {
   });
 
   it('honors a custom allowedHostnames list', async () => {
-    server = createStreamableHttpServer(registerTestTools, { allowedHostnames: ['trusted.example'] });
+    server = createStreamableHttpServer(registerTestTools, { allowedHostnames: ['trusted.example'], oauth: testOAuthDeps });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const { port } = server.address() as AddressInfo;
 
@@ -234,12 +266,12 @@ describe('streamable HTTP application', () => {
     const rejected = await postWithHost(port, '127.0.0.1');
     expect(rejected.status).toBe(400);
 
-    const accepted = await postWithHost(port, 'trusted.example');
+    const accepted = await postWithHost(port, 'trusted.example', AUTH_HEADER);
     expect(accepted.status).toBe(200);
   });
 
   it('answers 404 for paths other than the MCP endpoint', async () => {
-    server = createStreamableHttpServer(registerTestTools);
+    server = createStreamableHttpServer(registerTestTools, { oauth: testOAuthDeps });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const { port } = server.address() as AddressInfo;
 
@@ -248,7 +280,7 @@ describe('streamable HTTP application', () => {
   });
 
   it('does not cross-contaminate responses between two concurrent requests', async () => {
-    server = createStreamableHttpServer(registerTestTools);
+    server = createStreamableHttpServer(registerTestTools, { oauth: testOAuthDeps });
     const url = await listen(server);
 
     // Echo the requested company_id back so each response can be tied to the
@@ -261,8 +293,8 @@ describe('streamable HTTP application', () => {
 
     const clientA = new Client({ name: 'client-a', version: '1.0.0' });
     const clientB = new Client({ name: 'client-b', version: '1.0.0' });
-    const transportA = new StreamableHTTPClientTransport(url);
-    const transportB = new StreamableHTTPClientTransport(url);
+    const transportA = new StreamableHTTPClientTransport(url, { requestInit: { headers: AUTH_HEADER } });
+    const transportB = new StreamableHTTPClientTransport(url, { requestInit: { headers: AUTH_HEADER } });
 
     await Promise.all([clientA.connect(transportA), clientB.connect(transportB)]);
 

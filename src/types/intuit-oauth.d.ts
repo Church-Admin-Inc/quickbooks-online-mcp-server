@@ -37,6 +37,7 @@ declare module 'intuit-oauth' {
     refreshToken(): Promise<any>;
     refreshUsingToken(refreshToken: string): Promise<{ token: { access_token: string, expires_in: number } }>;
     revoke(options: { token: string }): Promise<any>;
+    getUserInfo(): Promise<{ json?: Record<string, unknown> }>;
 
     // Add more methods as needed
   }

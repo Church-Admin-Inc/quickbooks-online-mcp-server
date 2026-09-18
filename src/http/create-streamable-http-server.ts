@@ -2,21 +2,31 @@ import http from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createMcpServer } from "../server/qbo-mcp-server.js";
+import { runWithEmployeeContext } from "../context/employee-context.js";
+import {
+  createDefaultOAuthDeps,
+  requireBearerAuth,
+  resolveOrigin,
+  tryHandleOAuthRequest,
+  type OAuthDeps,
+} from "./oauth-http.js";
 
 export const MCP_HTTP_PATH = "/mcp";
 
-// This server has no authentication yet (that's issue #6) and, by default,
-// binds only to loopback (see src/streamable-http-index.ts). Loopback
-// binding alone does not stop DNS rebinding: a page on an attacker-controlled
-// domain that resolves to 127.0.0.1 can still have a victim's browser send it
-// a same-origin-looking request whose Host header is that attacker domain.
-// Validating Host against a known-good allowlist closes that gap regardless
-// of auth. https://modelcontextprotocol.io/docs/concepts/transports#security
+// By default this binds only to loopback (see src/streamable-http-index.ts).
+// Loopback binding alone does not stop DNS rebinding: a page on an
+// attacker-controlled domain that resolves to 127.0.0.1 can still have a
+// victim's browser send it a same-origin-looking request whose Host header
+// is that attacker domain. Validating Host against a known-good allowlist
+// closes that gap regardless of auth.
+// https://modelcontextprotocol.io/docs/concepts/transports#security
 export const DEFAULT_ALLOWED_HOSTNAMES = ["127.0.0.1", "localhost", "::1"];
 
 export interface CreateStreamableHttpServerOptions {
   /** Hostnames (no port) accepted in the request's Host header. */
   allowedHostnames?: string[];
+  /** Overridable for tests (see tests/integration/oauth-http-application.test.ts); defaults to the real Intuit-federated OAuth server. */
+  oauth?: OAuthDeps;
 }
 
 /**
@@ -33,14 +43,21 @@ export interface CreateStreamableHttpServerOptions {
  * modules itself. Eagerly importing them here would make this module the
  * first thing to load them under Jest, surfacing currently-untested files in
  * the coverage report and sinking the global 100% threshold.
+ *
+ * Every request to MCP_HTTP_PATH requires a bearer token issued by this
+ * server's own OAuth endpoints (issue #6); the token's employee identity is
+ * made available to every tool call via ../context/employee-context.js. The
+ * OAuth endpoints themselves (metadata, /authorize, the Intuit callback,
+ * /token) are public, same as any authorization server's.
  */
 export function createStreamableHttpServer(
   registerTools: (server: McpServer) => void,
   options: CreateStreamableHttpServerOptions = {}
 ): http.Server {
   const allowedHostnames = options.allowedHostnames ?? DEFAULT_ALLOWED_HOSTNAMES;
+  const oauth = options.oauth ?? createDefaultOAuthDeps();
   return http.createServer((req, res) => {
-    void handleRequest(req, res, registerTools, allowedHostnames);
+    void handleRequest(req, res, registerTools, allowedHostnames, oauth);
   });
 }
 
@@ -57,7 +74,8 @@ async function handleRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   registerTools: (server: McpServer) => void,
-  allowedHostnames: string[]
+  allowedHostnames: string[],
+  oauth: OAuthDeps
 ): Promise<void> {
   const hostHeader = req.headers.host;
   const hostname = hostHeader ? hostnameOf(hostHeader) : null;
@@ -70,13 +88,22 @@ async function handleRequest(
   // req.url is always a string for a real 'request' event on an http.Server;
   // the base below is a parsing anchor only — the host was already validated
   // above, and only the pathname is used for routing.
-  const { pathname } = new URL(req.url as string, "http://localhost");
+  const url = new URL(req.url as string, "http://localhost");
+  const { pathname } = url;
+  const origin = resolveOrigin(req, hostname);
+
+  if (await tryHandleOAuthRequest(req, res, pathname, url, origin, MCP_HTTP_PATH, oauth)) {
+    return;
+  }
 
   if (pathname !== MCP_HTTP_PATH) {
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Not Found" }));
     return;
   }
+
+  const identity = requireBearerAuth(req, res, origin, MCP_HTTP_PATH, oauth.store);
+  if (!identity) return;
 
   try {
     const server = createMcpServer();
@@ -93,7 +120,7 @@ async function handleRequest(
     });
 
     await server.connect(transport);
-    await transport.handleRequest(req, res);
+    await runWithEmployeeContext(identity, () => transport.handleRequest(req, res));
   } catch (error) {
     console.error("[http] Error handling MCP request:", error);
     if (!res.headersSent) {
