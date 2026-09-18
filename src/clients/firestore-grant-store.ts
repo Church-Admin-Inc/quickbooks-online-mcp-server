@@ -128,6 +128,14 @@ export interface GrantStore {
    * something other than a single grant key.
    */
   listForEmployee(employeeSub: string): Promise<Grant[]>;
+
+  /**
+   * Every grant currently stored, across every employee and Company (issue
+   * #12's scheduled maintenance job: the daily refresh, weekly
+   * re-validation, and 30-day expiry sweeps all need the whole set, not one
+   * employee's slice).
+   */
+  listAll(): Promise<Grant[]>;
 }
 
 interface StoredGrantData {
@@ -193,6 +201,11 @@ export class FirestoreGrantStore implements GrantStore {
       .map((data) => asStoredGrantData(data))
       .filter((stored) => stored.employeeSub === employeeSub)
       .map(toGrant);
+  }
+
+  async listAll(): Promise<Grant[]> {
+    const docs = await this.firestore.listCollection(this.collectionPath);
+    return docs.map((data) => asStoredGrantData(data)).map(toGrant);
   }
 
   private docRef(key: GrantKey): FirestoreDocRefLike {

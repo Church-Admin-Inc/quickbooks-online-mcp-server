@@ -214,4 +214,25 @@ describe('FirestoreGrantStore', () => {
       expect(await store.listForEmployee('emp-2')).toEqual([]);
     });
   });
+
+  describe('listAll (issue #12)', () => {
+    it('lists every grant across every employee and Company', async () => {
+      const store = new FirestoreGrantStore(new FakeFirestore());
+      await store.forGrant({ employeeSub: 'emp-1', realmId: 'company-a' }).create('rt-a', 'Company A');
+      await store.forGrant({ employeeSub: 'emp-1', realmId: 'company-b' }).create('rt-b', 'Company B');
+      await store.forGrant({ employeeSub: 'emp-2', realmId: 'company-a' }).create('rt-c', 'Company A');
+
+      const grants = await store.listAll();
+
+      expect(grants).toHaveLength(3);
+      expect(new Set(grants.map((g) => `${g.employeeSub}:${g.realmId}`))).toEqual(
+        new Set(['emp-1:company-a', 'emp-1:company-b', 'emp-2:company-a'])
+      );
+    });
+
+    it('returns an empty list when no grants exist', async () => {
+      const store = new FirestoreGrantStore(new FakeFirestore());
+      expect(await store.listAll()).toEqual([]);
+    });
+  });
 });
