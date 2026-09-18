@@ -57,9 +57,21 @@ gcloud run deploy qbo-mcp-server --project=<PROJECT_ID> --region=<REGION> \
   --service-account=qbo-mcp-server@<PROJECT_ID>.iam.gserviceaccount.com \
   --min-instances=0 --max-instances=3 \
   --allow-unauthenticated \
-  --set-env-vars="HOST=0.0.0.0,QUICKBOOKS_ENVIRONMENT=sandbox" \
+  --set-env-vars="HOST=0.0.0.0,QUICKBOOKS_ENVIRONMENT=sandbox,GOOGLE_CLOUD_PROJECT=<PROJECT_ID>" \
   --set-secrets="QUICKBOOKS_CLIENT_ID=QUICKBOOKS_CLIENT_ID:latest,QUICKBOOKS_CLIENT_SECRET=QUICKBOOKS_CLIENT_SECRET:latest"
 ```
+
+`GOOGLE_CLOUD_PROJECT` must be set explicitly — unlike App Engine or Cloud
+Functions, Cloud Run does **not** inject it automatically. Without it,
+`createFirestore()` (src/clients/cloud-firestore.ts) silently falls back to
+the in-process store: every request appears to work (grants "persist"
+within one warm container), but nothing survives a cold start or is shared
+across concurrent instances, and nothing lands in Firestore at all. This
+was caught live during #13's verification — `gcloud firestore` showed an
+empty `grants` collection despite successful tool calls, because two
+requests in the same warm container shared in-memory state that looked like
+persistence but wasn't. Redeploying with this var set, then re-authorizing,
+produced a real Firestore document keyed `{employeeSub}:{realmId}`.
 
 `--allow-unauthenticated` is required — claude.ai must reach `/authorize`
 and `/token` over open HTTPS. Cloud Run's own IAM gate would sit in front of
@@ -93,7 +105,7 @@ gcloud run jobs create qbo-grant-maintenance-<daily|weekly> \
   --project=<PROJECT_ID> --region=<REGION> \
   --image=<REGION>-docker.pkg.dev/<PROJECT_ID>/qbo-mcp-server/qbo-mcp-server:latest \
   --service-account=qbo-mcp-server@<PROJECT_ID>.iam.gserviceaccount.com \
-  --set-env-vars="QUICKBOOKS_ENVIRONMENT=sandbox" \
+  --set-env-vars="QUICKBOOKS_ENVIRONMENT=sandbox,GOOGLE_CLOUD_PROJECT=<PROJECT_ID>" \
   --set-secrets="QUICKBOOKS_CLIENT_ID=QUICKBOOKS_CLIENT_ID:latest,QUICKBOOKS_CLIENT_SECRET=QUICKBOOKS_CLIENT_SECRET:latest" \
   --command="node" --args="dist/grant-maintenance-index.js,<daily|weekly>" \
   --max-retries=0 --task-timeout=300

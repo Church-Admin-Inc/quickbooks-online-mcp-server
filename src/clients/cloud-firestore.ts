@@ -60,11 +60,17 @@ function toSnapshotLike(snapshot: DocumentSnapshot): FirestoreDocSnapshotLike {
 }
 
 /**
- * Selects the deployed Firestore instance when GOOGLE_CLOUD_PROJECT is set
- * (Cloud Run and every other GCP compute product export it automatically —
- * see https://cloud.google.com/run/docs/container-contract#env-vars),
+ * Selects the deployed Firestore instance when GOOGLE_CLOUD_PROJECT is set,
  * falling back to the in-process store everywhere else (local dev, tests,
  * stdio usage) so nothing outside a real deployment needs GCP credentials.
+ *
+ * Unlike App Engine or Cloud Functions, Cloud Run does NOT set this
+ * automatically (see docs/deploy.md) — it must be passed explicitly via
+ * `--set-env-vars`. Silently falling back to the in-process store here is
+ * exactly the failure mode that makes a missing var dangerous: every
+ * request still "succeeds" (grants persist within one warm container), but
+ * nothing survives a cold start or is shared across concurrent instances,
+ * and nothing ever reaches Firestore. Caught live during #13's deployment.
  */
 export function createFirestore(): FirestoreLike {
   const projectId = process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT;
