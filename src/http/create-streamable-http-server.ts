@@ -3,6 +3,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createMcpServer } from "../server/qbo-mcp-server.js";
 import { runWithEmployeeContext } from "../context/employee-context.js";
+import { runWithRequestContext } from "../context/request-context.js";
+import { setCompanyAuthorizationDeps } from "../helpers/register-tool.js";
 import {
   createDefaultOAuthDeps,
   requireBearerAuth,
@@ -10,6 +12,11 @@ import {
   tryHandleOAuthRequest,
   type OAuthDeps,
 } from "./oauth-http.js";
+import {
+  createDefaultCompanyOAuthDeps,
+  tryHandleCompanyOAuthRequest,
+  type CompanyOAuthDeps,
+} from "./company-oauth-http.js";
 
 export const MCP_HTTP_PATH = "/mcp";
 
@@ -27,6 +34,8 @@ export interface CreateStreamableHttpServerOptions {
   allowedHostnames?: string[];
   /** Overridable for tests (see tests/integration/oauth-http-application.test.ts); defaults to the real Intuit-federated OAuth server. */
   oauth?: OAuthDeps;
+  /** Overridable for tests (see tests/integration/company-authorization-application.test.ts); defaults to an in-process grant store and the real Intuit Accounting OAuth flow (issue #8). */
+  companyAuth?: CompanyOAuthDeps;
 }
 
 /**
@@ -56,8 +65,21 @@ export function createStreamableHttpServer(
 ): http.Server {
   const allowedHostnames = options.allowedHostnames ?? DEFAULT_ALLOWED_HOSTNAMES;
   const oauth = options.oauth ?? createDefaultOAuthDeps();
+  const companyAuth = options.companyAuth ?? createDefaultCompanyOAuthDeps();
+
+  // Wires issue #8's Company-authorization checkpoint onto the one
+  // chokepoint every tool call already passes through
+  // (../helpers/register-tool.js), rather than threading these deps through
+  // 145 handlers. This module deliberately never imports
+  // ../clients/quickbooks-client.js (see the `registerTools` doc comment
+  // above on why 145 handler modules are kept out of this file's import
+  // graph); wiring the matching grant-backed client resolver onto that
+  // module is the caller's job (see src/streamable-http-index.ts) using the
+  // SAME companyAuth.grantStore passed in here.
+  setCompanyAuthorizationDeps({ grantStore: companyAuth.grantStore, pending: companyAuth.pending });
+
   return http.createServer((req, res) => {
-    void handleRequest(req, res, registerTools, allowedHostnames, oauth);
+    void handleRequest(req, res, registerTools, allowedHostnames, oauth, companyAuth);
   });
 }
 
@@ -75,7 +97,8 @@ async function handleRequest(
   res: http.ServerResponse,
   registerTools: (server: McpServer) => void,
   allowedHostnames: string[],
-  oauth: OAuthDeps
+  oauth: OAuthDeps,
+  companyAuth: CompanyOAuthDeps
 ): Promise<void> {
   const hostHeader = req.headers.host;
   const hostname = hostHeader ? hostnameOf(hostHeader) : null;
@@ -93,6 +116,10 @@ async function handleRequest(
   const origin = resolveOrigin(req, hostname);
 
   if (await tryHandleOAuthRequest(req, res, pathname, url, origin, MCP_HTTP_PATH, oauth)) {
+    return;
+  }
+
+  if (await tryHandleCompanyOAuthRequest(req, res, pathname, url, origin, companyAuth)) {
     return;
   }
 
@@ -120,7 +147,9 @@ async function handleRequest(
     });
 
     await server.connect(transport);
-    await runWithEmployeeContext(identity, () => transport.handleRequest(req, res));
+    await runWithRequestContext({ origin }, () =>
+      runWithEmployeeContext(identity, () => transport.handleRequest(req, res))
+    );
   } catch (error) {
     console.error("[http] Error handling MCP request:", error);
     if (!res.headersSent) {

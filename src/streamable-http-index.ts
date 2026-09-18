@@ -5,6 +5,10 @@ import {
   DEFAULT_ALLOWED_HOSTNAMES,
   MCP_HTTP_PATH,
 } from "./http/create-streamable-http-server.js";
+import { createDefaultCompanyOAuthDeps } from "./http/company-oauth-http.js";
+import { setMultiTenantResolver } from "./clients/quickbooks-client.js";
+import { GrantBackedQuickbooksClients } from "./clients/grant-quickbooks-clients.js";
+import { loadIntuitFederationConfig } from "./auth/oauth-config.js";
 import { registerAllTools } from "./server/register-all-tools.js";
 
 // `??` only falls through on null/undefined, not on "" — a process manager
@@ -41,8 +45,18 @@ function readAllowedHostnames(): string[] {
 const port = readPort();
 const host = readHost();
 
+// The SAME grant store backs both halves of issue #8's Company-authorization
+// flow: the checkpoint createStreamableHttpServer wires onto register-tool.js
+// (via its companyAuth option), and the grant-backed QuickBooks client
+// resolver wired onto quickbooks-client.js here, so a grant the checkpoint
+// just confirmed exists is the one every handler's QuickbooksClient calls
+// actually use.
+const companyAuth = createDefaultCompanyOAuthDeps();
+setMultiTenantResolver(new GrantBackedQuickbooksClients(companyAuth.grantStore, loadIntuitFederationConfig));
+
 const server = createStreamableHttpServer(registerAllTools, {
   allowedHostnames: readAllowedHostnames(),
+  companyAuth,
 });
 
 server.listen(port, host, () => {
