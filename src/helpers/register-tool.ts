@@ -152,6 +152,15 @@ function withRealmId<T extends z.ZodType<any, any>>(schema: T, category: CrudCat
   return (schema as unknown as z.AnyZodObject).extend({ realm_id: realmIdField }) as unknown as T;
 }
 
+/**
+ * Tools that don't act on a single Company at all, so `realm_id` (per-Company
+ * by definition, ADR 0001) is never injected onto them (issue #9). Without
+ * this exemption every READ tool — including one that spans every Company
+ * the employee holds a grant for — would get the misleading "falls back to
+ * the session Company" note.
+ */
+const NO_REALM_ID_TOOLS = new Set<string>(["list_companies"]);
+
 /** Appends a realm_id note to a tool's description so its meaning is unmissable. */
 function describeRealmId(description: string, category: CrudCategory): string {
   const note =
@@ -191,15 +200,35 @@ export function setCompanyAuthorizationDeps(deps: CompanyAuthorizationDeps | und
   companyAuthorizationDeps = deps;
 }
 
-/** Prompt to authorize, in place of a QuickBooks call, when the calling employee holds no grant for realmId yet. */
-function authorizationNeededResponse(toolName: string, realmId: string, authorizeUrl: string) {
+/**
+ * Prompt to authorize, in place of a QuickBooks call, when the calling
+ * employee holds no healthy grant for realmId. `reason` (issue #9)
+ * distinguishes a Company never authorized at all from one whose connection
+ * has since died, so the message never tells someone re-authorizing a dead
+ * connection that they "have not yet authorized" it. `companyName`, when
+ * known (a grant already exists to read it from), names the Company the way
+ * the employee actually refers to it rather than by its opaque realm id —
+ * the whole point of `list_companies` (also issue #9).
+ */
+function authorizationNeededResponse(
+  toolName: string,
+  realmId: string,
+  authorizeUrl: string,
+  reason: "missing" | "unhealthy",
+  companyName: string | undefined
+) {
+  const companyLabel = companyName ?? realmId;
+  const explanation =
+    reason === "unhealthy"
+      ? `your QuickBooks connection to Company "${companyLabel}" is no longer valid and must be re-authorized`
+      : `you have not yet authorized QuickBooks Company "${companyLabel}"`;
   return {
     content: [
       {
         type: "text" as const,
         text:
-          `${toolName} could not run: you have not yet authorized QuickBooks Company "${realmId}". Open this ` +
-          `link, sign in with your Intuit account, and authorize this Company, then retry the call: ${authorizeUrl}`,
+          `${toolName} could not run: ${explanation}. Open this link, sign in with your Intuit account, and ` +
+          `authorize this Company, then retry the call: ${authorizeUrl}`,
       },
     ],
   };
@@ -212,8 +241,9 @@ export function RegisterTool<T extends z.ZodType<any, any>>(
   if (isToolDisabled(toolDefinition.name)) return;
 
   const category = getCrudCategory(toolDefinition.name);
-  const requiresRealmId = category !== CRUD_CATEGORY.READ;
-  const schemaWithRealmId = withRealmId(toolDefinition.schema, category);
+  const spansAllCompanies = NO_REALM_ID_TOOLS.has(toolDefinition.name);
+  const requiresRealmId = category !== CRUD_CATEGORY.READ && !spansAllCompanies;
+  const schemaWithRealmId = spansAllCompanies ? toolDefinition.schema : withRealmId(toolDefinition.schema, category);
 
   const known = knownParamKeys(schemaWithRealmId);
   const paramsSchema = permissiveParamsSchema(schemaWithRealmId);
@@ -263,7 +293,13 @@ export function RegisterTool<T extends z.ZodType<any, any>>(
         const origin = getCurrentRequestContext()?.origin ?? "";
         const authorization = await checkCompanyAuthorization(companyAuthorizationDeps, employee, realmId, origin);
         if (!authorization.authorized) {
-          return authorizationNeededResponse(toolDefinition.name, realmId, authorization.authorizeUrl);
+          return authorizationNeededResponse(
+            toolDefinition.name,
+            realmId,
+            authorization.authorizeUrl,
+            authorization.reason,
+            authorization.companyName
+          );
         }
       }
     }
@@ -284,7 +320,7 @@ export function RegisterTool<T extends z.ZodType<any, any>>(
 
   server.tool(
     toolDefinition.name,
-    describeRealmId(toolDefinition.description, category),
+    spansAllCompanies ? toolDefinition.description : describeRealmId(toolDefinition.description, category),
     { params: paramsSchema },
     handler
   );

@@ -5,6 +5,7 @@ import {
   CompanyAuthorizationStore,
 } from "../auth/company-authorization.js";
 import { IntuitAccountingOAuthProvider, type IntuitAccountingAuthorizationProvider } from "../auth/intuit-accounting-authorization-provider.js";
+import { IntuitCompanyInfoProvider, type CompanyInfoProvider } from "../auth/company-info-provider.js";
 import { loadIntuitFederationConfig } from "../auth/oauth-config.js";
 import { FirestoreGrantStore, type GrantStore } from "../clients/firestore-grant-store.js";
 import { InMemoryFirestore } from "../clients/in-memory-firestore.js";
@@ -25,6 +26,8 @@ export interface CompanyOAuthDeps {
   grantStore: GrantStore;
   pending: CompanyAuthorizationStore;
   authorizationProvider: IntuitAccountingAuthorizationProvider;
+  /** Looks up a Company's display name at grant creation (issue #9). */
+  companyInfoProvider: CompanyInfoProvider;
 }
 
 /**
@@ -41,6 +44,7 @@ export function createDefaultCompanyOAuthDeps(): CompanyOAuthDeps {
     grantStore: new FirestoreGrantStore(new InMemoryFirestore()),
     pending: new CompanyAuthorizationStore(),
     authorizationProvider: new IntuitAccountingOAuthProvider(loadIntuitFederationConfig),
+    companyInfoProvider: new IntuitCompanyInfoProvider(),
   };
 }
 
@@ -92,7 +96,7 @@ async function handleCompanyCallback(
     return;
   }
 
-  let grant: { refreshToken: string; realmId: string };
+  let grant: { refreshToken: string; realmId: string; accessToken: string; environment: string };
   try {
     grant = await deps.authorizationProvider.exchangeCodeForGrant({
       callbackUrl: `${origin}${url.pathname}${url.search}`,
@@ -118,7 +122,25 @@ async function handleCompanyCallback(
     return;
   }
 
-  await deps.grantStore.forGrant({ employeeSub: pending.employeeSub, realmId: grant.realmId }).create(grant.refreshToken);
+  // Best-effort: a CompanyInfo lookup failure must not block the authorization
+  // itself — the grant is real and usable either way. Falls back to the realm
+  // id (FirestoreGrantStore.create()'s own default) so list_companies (issue
+  // #9) still has *something* to show rather than failing the whole flow over
+  // a display-name nicety.
+  let companyName: string | undefined;
+  try {
+    companyName = await deps.companyInfoProvider.fetchCompanyName({
+      accessToken: grant.accessToken,
+      realmId: grant.realmId,
+      environment: grant.environment,
+    });
+  } catch (error) {
+    console.error("[company-oauth] Failed to fetch Company name:", error);
+  }
+
+  await deps.grantStore
+    .forGrant({ employeeSub: pending.employeeSub, realmId: grant.realmId })
+    .create(grant.refreshToken, companyName);
 
   sendHtml(res, 200, "✓ QuickBooks authorized", "You can close this window and return to Claude.");
 }

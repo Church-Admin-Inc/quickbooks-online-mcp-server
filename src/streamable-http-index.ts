@@ -52,7 +52,9 @@ const host = readHost();
 // just confirmed exists is the one every handler's QuickbooksClient calls
 // actually use.
 const companyAuth = createDefaultCompanyOAuthDeps();
-setMultiTenantResolver(new GrantBackedQuickbooksClients(companyAuth.grantStore, loadIntuitFederationConfig));
+setMultiTenantResolver(
+  new GrantBackedQuickbooksClients(companyAuth.grantStore, loadIntuitFederationConfig, companyAuth.pending)
+);
 
 const server = createStreamableHttpServer(registerAllTools, {
   allowedHostnames: readAllowedHostnames(),

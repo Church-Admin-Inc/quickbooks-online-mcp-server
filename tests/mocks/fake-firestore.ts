@@ -26,6 +26,15 @@ export class FakeFirestore implements FirestoreLike {
     };
   }
 
+  async listCollection(collectionPath: string): Promise<Record<string, unknown>[]> {
+    const prefix = `${collectionPath}/`;
+    const results: Record<string, unknown>[] = [];
+    for (const [path, doc] of this.docs) {
+      if (path.startsWith(prefix)) results.push({ ...doc.data });
+    }
+    return results;
+  }
+
   async runTransaction<T>(
     updateFunction: (transaction: FirestoreTransactionLike) => Promise<T>,
     options?: { maxAttempts?: number }

@@ -157,4 +157,61 @@ describe('FirestoreGrantStore', () => {
     const grant = await storeA.forGrant(KEY).read();
     expect(grant?.refreshToken).toBe('winner-rotated-from-seed-refresh-token');
   });
+
+  describe('companyName (issue #9)', () => {
+    it('stores the given companyName on create', async () => {
+      const store = new FirestoreGrantStore(new FakeFirestore());
+      const created = await store.forGrant(KEY).create('seed-refresh-token', 'Acme Inc');
+      expect(created.companyName).toBe('Acme Inc');
+
+      const read = await store.forGrant(KEY).read();
+      expect(read?.companyName).toBe('Acme Inc');
+    });
+
+    it('defaults companyName to the realm id when omitted', async () => {
+      const store = new FirestoreGrantStore(new FakeFirestore());
+      const created = await store.forGrant(KEY).create('seed-refresh-token');
+      expect(created.companyName).toBe(KEY.realmId);
+    });
+
+    it('falls back to the realm id when reading a legacy grant with no stored companyName', async () => {
+      const firestore = new FakeFirestore();
+      const store = new FirestoreGrantStore(firestore);
+      // Simulate a document written before issue #9 added this field.
+      await firestore.doc(`grants/${KEY.employeeSub}:${KEY.realmId}`).set({
+        employeeSub: KEY.employeeSub,
+        realmId: KEY.realmId,
+        refreshToken: 'legacy-token',
+        createdAt: new Date().toISOString(),
+        lastRefreshedAt: new Date().toISOString(),
+        lastUsedAt: null,
+        health: 'healthy',
+      });
+
+      const read = await store.forGrant(KEY).read();
+      expect(read?.companyName).toBe(KEY.realmId);
+    });
+  });
+
+  describe('listForEmployee (issue #9)', () => {
+    it('lists every grant held by the given employee, across Companies', async () => {
+      const store = new FirestoreGrantStore(new FakeFirestore());
+      await store.forGrant({ employeeSub: 'emp-1', realmId: 'company-a' }).create('rt-a', 'Company A');
+      await store.forGrant({ employeeSub: 'emp-1', realmId: 'company-b' }).create('rt-b', 'Company B');
+      await store.forGrant({ employeeSub: 'emp-2', realmId: 'company-a' }).create('rt-c', 'Company A');
+
+      const grants = await store.listForEmployee('emp-1');
+
+      expect(grants).toHaveLength(2);
+      expect(new Set(grants.map((g) => g.realmId))).toEqual(new Set(['company-a', 'company-b']));
+      expect(grants.every((g) => g.employeeSub === 'emp-1')).toBe(true);
+    });
+
+    it('returns an empty list for an employee who has authorized no Companies', async () => {
+      const store = new FirestoreGrantStore(new FakeFirestore());
+      await store.forGrant({ employeeSub: 'emp-1', realmId: 'company-a' }).create('rt-a');
+
+      expect(await store.listForEmployee('emp-2')).toEqual([]);
+    });
+  });
 });

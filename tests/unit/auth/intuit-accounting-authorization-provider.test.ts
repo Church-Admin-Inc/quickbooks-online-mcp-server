@@ -42,25 +42,32 @@ describe('IntuitAccountingOAuthProvider', () => {
     );
   });
 
-  it('exchanges a callback URL for a refresh token and the realm Intuit issued it for', async () => {
-    mockCreateToken.mockResolvedValue({ token: { refresh_token: 'rt-1', realmId: 'company-a' } });
+  it('exchanges a callback URL for a refresh token, access token, environment and the realm Intuit issued it for', async () => {
+    mockCreateToken.mockResolvedValue({ token: { refresh_token: 'rt-1', realmId: 'company-a', access_token: 'at-1' } });
 
     const grant = await provider.exchangeCodeForGrant({
       callbackUrl: 'https://qbo.example.com/auth/quickbooks/callback?code=abc&realmId=company-a&state=s',
       redirectUri: 'https://qbo.example.com/auth/quickbooks/callback',
     });
 
-    expect(grant).toEqual({ refreshToken: 'rt-1', realmId: 'company-a' });
+    expect(grant).toEqual({ refreshToken: 'rt-1', realmId: 'company-a', accessToken: 'at-1', environment: 'sandbox' });
     expect(mockCreateToken).toHaveBeenCalledWith(
       expect.objectContaining({ redirectUri: 'https://qbo.example.com/auth/quickbooks/callback' }),
       'https://qbo.example.com/auth/quickbooks/callback?code=abc&realmId=company-a&state=s'
     );
   });
 
-  it('throws when Intuit does not return both a refresh token and a realm id', async () => {
+  it('throws when Intuit does not return a refresh token, an access token, and a realm id', async () => {
     mockCreateToken.mockResolvedValue({ token: { refresh_token: 'rt-1' } });
     await expect(
       provider.exchangeCodeForGrant({ callbackUrl: 'https://x/cb?code=1', redirectUri: 'https://x/cb' })
-    ).rejects.toThrow(/refresh token and a realm id/);
+    ).rejects.toThrow(/refresh token, an access token, and a realm id/);
+  });
+
+  it('throws when Intuit returns a refresh token and realm id but no access token', async () => {
+    mockCreateToken.mockResolvedValue({ token: { refresh_token: 'rt-1', realmId: 'company-a' } });
+    await expect(
+      provider.exchangeCodeForGrant({ callbackUrl: 'https://x/cb?code=1', redirectUri: 'https://x/cb' })
+    ).rejects.toThrow(/refresh token, an access token, and a realm id/);
   });
 });

@@ -5,6 +5,7 @@ import { createMcpServer } from "../server/qbo-mcp-server.js";
 import { runWithEmployeeContext } from "../context/employee-context.js";
 import { runWithRequestContext } from "../context/request-context.js";
 import { setCompanyAuthorizationDeps } from "../helpers/register-tool.js";
+import { setListCompaniesDeps } from "../handlers/list-companies.handler.js";
 import {
   createDefaultOAuthDeps,
   requireBearerAuth,
@@ -77,6 +78,8 @@ export function createStreamableHttpServer(
   // module is the caller's job (see src/streamable-http-index.ts) using the
   // SAME companyAuth.grantStore passed in here.
   setCompanyAuthorizationDeps({ grantStore: companyAuth.grantStore, pending: companyAuth.pending });
+  // list_companies (issue #9) reads the same grant store this checkpoint uses.
+  setListCompaniesDeps({ grantStore: companyAuth.grantStore });
 
   return http.createServer((req, res) => {
     void handleRequest(req, res, registerTools, allowedHostnames, oauth, companyAuth);

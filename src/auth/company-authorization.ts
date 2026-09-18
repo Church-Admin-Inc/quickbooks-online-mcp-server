@@ -70,14 +70,53 @@ export interface CompanyAuthorizationDeps {
   pending: CompanyAuthorizationStore;
 }
 
-export type CompanyAuthorizationResult = { authorized: true } | { authorized: false; authorizeUrl: string };
+export type CompanyAuthorizationResult =
+  | { authorized: true }
+  | {
+      authorized: false;
+      authorizeUrl: string;
+      reason: "missing" | "unhealthy";
+      /**
+       * The Company's human-readable QuickBooks name (issue #9), present
+       * whenever a grant already exists to read it from (reason "unhealthy")
+       * — never for "missing", since no grant has ever recorded a name for a
+       * Company nobody has authorized yet. Lets the response name the Company
+       * the way the employee actually refers to it, not by its opaque realm
+       * id — the whole point `list_companies` (also issue #9) exists to spare
+       * them from.
+       */
+      companyName?: string;
+    };
+
+/**
+ * Mints a one-time start token for (employee, Company) and builds the
+ * absolute URL the employee's browser opens to authorize it. Shared by
+ * checkCompanyAuthorization() below and by
+ * ../clients/grant-quickbooks-clients.ts (issue #9), which needs the exact
+ * same link when it detects a grant just died mid-call — same endpoints, same
+ * one-time-token lifecycle, so there is exactly one authorization UX rather
+ * than two.
+ */
+export function mintCompanyAuthorizeUrl(
+  pending: CompanyAuthorizationStore,
+  record: { employeeSub: string; realmId: string },
+  origin: string
+): string {
+  const token = pending.create(record);
+  const authorizeUrl = new URL(COMPANY_AUTHORIZE_PATH, origin);
+  authorizeUrl.searchParams.set("token", token);
+  return authorizeUrl.toString();
+}
 
 /**
  * Checks whether `employee` already holds a healthy grant for `realmId`. If
  * not, mints a one-time start token and returns the URL the employee opens
  * to authorize it — never an error, per the acceptance criteria this
  * implements ("a call naming a Company the employee has no grant for prompts
- * authorization rather than erroring").
+ * authorization rather than erroring"). `reason` distinguishes a Company
+ * never authorized at all ("missing") from one whose grant died since
+ * (issue #9's "unhealthy") so register-tool.ts's response can address the
+ * employee accurately in either case.
  */
 export async function checkCompanyAuthorization(
   deps: CompanyAuthorizationDeps,
@@ -90,8 +129,6 @@ export async function checkCompanyAuthorization(
     return { authorized: true };
   }
 
-  const token = deps.pending.create({ employeeSub: employee.sub, realmId });
-  const authorizeUrl = new URL(COMPANY_AUTHORIZE_PATH, origin);
-  authorizeUrl.searchParams.set("token", token);
-  return { authorized: false, authorizeUrl: authorizeUrl.toString() };
+  const authorizeUrl = mintCompanyAuthorizeUrl(deps.pending, { employeeSub: employee.sub, realmId }, origin);
+  return { authorized: false, authorizeUrl, reason: grant ? "unhealthy" : "missing", companyName: grant?.companyName };
 }
