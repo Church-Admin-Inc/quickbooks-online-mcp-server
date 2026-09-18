@@ -3,37 +3,9 @@ import QuickBooks from "node-quickbooks";
 import OAuthClient from "intuit-oauth";
 import http from 'http';
 import crypto from 'crypto';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import open from 'open';
 import { setDefaultCompanyContext, getCurrentCompanyContext } from '../context/company-context.js';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-// Where the server reads .env at startup and persists rotated refresh tokens.
-// Defaults to the installed module's ../../.env (dist/clients/ -> package root)
-// so a host-spawned server with an unrelated cwd still finds it. Override with
-// QUICKBOOKS_TOKEN_STORE_PATH (an absolute path) to point at a WRITABLE location.
-// This is required whenever the module itself lives on a read-only filesystem —
-// containers with a read-only root, Nix/immutable installs (see #63, where the
-// default path can't be written) — and lets a per-tenant host keep each
-// connection's rotated token in its own isolated path.
-//
-// NOTE: this value is resolved BEFORE dotenv loads the file below, so the
-// override only takes effect when set in the host process env (e.g. the MCP
-// server config's env block) — setting it inside .env has no effect. It must
-// be absolute: a relative path would resolve against the host app's working
-// directory, which is unpredictable (the exact failure the module-relative
-// default exists to avoid).
-const tokenStorePathOverride = process.env.QUICKBOOKS_TOKEN_STORE_PATH?.trim();
-if (tokenStorePathOverride && !path.isAbsolute(tokenStorePathOverride)) {
-  throw Error(
-    `QUICKBOOKS_TOKEN_STORE_PATH must be an absolute path, got "${tokenStorePathOverride}"`
-  );
-}
-const TOKEN_STORE_PATH =
-  tokenStorePathOverride || path.join(__dirname, '..', '..', '.env');
+import { TOKEN_STORE_PATH, FileTokenGrantStore, type TokenGrantStore } from './token-grant-store.js';
 
 // Use override: true so that values from the token store always win over any
 // empty-string placeholders a host app (e.g. Claude Desktop) may inject via
@@ -79,6 +51,7 @@ export class QuickbooksClient {
   private oauthClient: OAuthClient;
   private isAuthenticating: boolean = false;
   private redirectUri: string;
+  private readonly grantStore: TokenGrantStore;
 
   // Refresh 5 minutes before actual expiry to avoid edge cases
   private static readonly TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000;
@@ -100,6 +73,7 @@ export class QuickbooksClient {
     realmId?: string;
     environment: string;
     redirectUri: string;
+    grantStore?: TokenGrantStore;
   }) {
     this.clientId = config.clientId;
     this.clientSecret = config.clientSecret;
@@ -107,6 +81,7 @@ export class QuickbooksClient {
     this.realmId = config.realmId;
     this.environment = config.environment;
     this.redirectUri = config.redirectUri;
+    this.grantStore = config.grantStore ?? new FileTokenGrantStore();
     this.oauthClient = new OAuthClient({
       clientId: this.clientId,
       clientSecret: this.clientSecret,
@@ -118,28 +93,6 @@ export class QuickbooksClient {
   private isTokenExpiredOrExpiringSoon(): boolean {
     if (!this.accessToken || !this.accessTokenExpiry) return true;
     return this.accessTokenExpiry <= new Date(Date.now() + QuickbooksClient.TOKEN_REFRESH_BUFFER_MS);
-  }
-
-  // Read the refresh token currently persisted in the token store (.env by
-  // default, or QUICKBOOKS_TOKEN_STORE_PATH). Used to pick up a rotation
-  // performed by a SIBLING process before we attempt our own refresh: a host
-  // may spawn this server more than once against the same store (e.g.
-  // Claude Desktop and Claude Code simultaneously), and Intuit invalidates the
-  // previous refresh token on every rotation — so a token loaded into memory at
-  // startup can be silently superseded on disk by another process.
-  private readPersistedRefreshToken(): string | undefined {
-    try {
-      // Parse with dotenv itself so the value is normalized identically to how
-      // the in-memory token was loaded at startup — surrounding quotes stripped,
-      // inline comments removed, optional `export ` prefix handled. A naive
-      // slice would keep quotes/comments and could poison a valid token with a
-      // value that only looks different.
-      const parsed = dotenv.parse(fs.readFileSync(TOKEN_STORE_PATH));
-      const value = parsed.QUICKBOOKS_REFRESH_TOKEN?.trim();
-      return value || undefined;
-    } catch {
-      return undefined;
-    }
   }
 
   // Distinguish a genuinely dead refresh token (revoked, expired, or rotated
@@ -334,7 +287,7 @@ export class QuickbooksClient {
             // Save tokens
             this.refreshToken = tokens.refresh_token;
             this.realmId = tokens.realmId;
-            this.saveTokensToEnv();
+            this.grantStore.save({ refreshToken: this.refreshToken, realmId: this.realmId });
 
             // Send success response
             res.writeHead(200, { 'Content-Type': 'text/html' });
@@ -422,77 +375,6 @@ export class QuickbooksClient {
     });
   }
 
-  private saveTokensToEnv(): void {
-    const tokenPath = TOKEN_STORE_PATH;
-    const envContent = fs.existsSync(tokenPath) ? fs.readFileSync(tokenPath, 'utf-8') : '';
-    const envLines = envContent.split('\n');
-
-    const updateEnvVar = (name: string, value: string) => {
-      const index = envLines.findIndex(line => line.startsWith(`${name}=`));
-      if (index !== -1) {
-        envLines[index] = `${name}=${value}`;
-      } else {
-        envLines.push(`${name}=${value}`);
-      }
-    };
-
-    if (this.refreshToken) updateEnvVar('QUICKBOOKS_REFRESH_TOKEN', this.refreshToken);
-    if (this.realmId) updateEnvVar('QUICKBOOKS_REALM_ID', this.realmId);
-
-    const newContent = envLines.join('\n');
-    const isSymlink = this.isSymbolicLink(tokenPath);
-
-    if (isSymlink) {
-      // Write directly through the symlink to the real target. Using
-      // rename on a symlink replaces the link itself rather than writing
-      // through it, which breaks persistent-volume mounts in containers.
-      // If the symlink target doesn't exist yet (fresh PVC mount), resolve
-      // the link target without requiring it to exist, then write directly.
-      let realPath: string;
-      try {
-        realPath = fs.realpathSync(tokenPath);
-      } catch (e: any) {
-        if (e?.code === 'ENOENT') {
-          // Dangling symlink: target doesn't exist yet. readlinkSync returns the
-          // link target as stored, which may be RELATIVE — and a relative path is
-          // resolved against the process cwd, not the link's own directory. Resolve
-          // it against the symlink's directory so we write to the intended location.
-          const linkTarget = fs.readlinkSync(tokenPath);
-          realPath = path.isAbsolute(linkTarget)
-            ? linkTarget
-            : path.resolve(path.dirname(tokenPath), linkTarget);
-        } else {
-          throw e;
-        }
-      }
-      // Deliberate: no temp-file+rename here. Renaming over a symlink replaces the
-      // link itself (the bug this branch fixes), so we write through to the target
-      // directly. This trades atomicity for correct persistent-volume behavior — a
-      // crash mid-write could leave the target .env partially written.
-      fs.writeFileSync(realPath, newContent, { mode: 0o600 });
-    } else {
-      // Atomic write: write to a sibling temp file, then rename. On POSIX
-      // rename is atomic within the same filesystem, so a crash mid-write
-      // cannot leave .env half-written or empty.
-      const tmpPath = `${tokenPath}.tmp.${process.pid}`;
-      try {
-        fs.writeFileSync(tmpPath, newContent, { mode: 0o600 });
-        fs.renameSync(tmpPath, tokenPath);
-      } catch (err) {
-        try { fs.unlinkSync(tmpPath); } catch { /* best effort */ }
-        throw err;
-      }
-    }
-  }
-
-  private isSymbolicLink(filePath: string): boolean {
-    try {
-      return fs.lstatSync(filePath).isSymbolicLink();
-    } catch {
-      return false;
-    }
-  }
-
   async refreshAccessToken() {
     if (!this.refreshToken) {
       await this.startOAuthFlow();
@@ -531,7 +413,7 @@ export class QuickbooksClient {
           if (!this.isAuthInvalidation(firstErr)) {
             throw firstErr;
           }
-          const latest = this.readPersistedRefreshToken();
+          const latest = this.grantStore.readRefreshToken();
           if (latest && latest !== this.refreshToken) {
             this.refreshToken = latest;
             token = await this.performRefresh(latest);
@@ -552,7 +434,7 @@ export class QuickbooksClient {
         if (newRefreshToken && newRefreshToken !== this.refreshToken) {
           this.refreshToken = newRefreshToken;
           try {
-            this.saveTokensToEnv();
+            this.grantStore.save({ refreshToken: this.refreshToken, realmId: this.realmId });
             console.error('[qbo-client] Refresh token rotated and persisted to .env');
           } catch (persistErr) {
             // Don't fail the whole refresh just because we couldn't write to
