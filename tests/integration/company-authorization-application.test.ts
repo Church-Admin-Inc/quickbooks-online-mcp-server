@@ -21,11 +21,20 @@ const { OAuthStore } = await import('../../src/auth/oauth-store');
 const { CompanyAuthorizationStore } = await import('../../src/auth/company-authorization');
 const { FirestoreGrantStore } = await import('../../src/clients/firestore-grant-store');
 const { InMemoryFirestore } = await import('../../src/clients/in-memory-firestore');
+const { ListCompaniesTool } = await import('../../src/tools/list-companies.tool');
 
 const EMPLOYEE_A = { sub: 'intuit-sub-a', email: 'a@example.com' };
 const EMPLOYEE_B = { sub: 'intuit-sub-b', email: 'b@example.com' };
 const TOKEN_A = 'bearer-token-a';
 const TOKEN_B = 'bearer-token-b';
+
+class FakeCompanyInfoProvider {
+  shouldFail = false;
+  async fetchCompanyName(params: { realmId: string }): Promise<string> {
+    if (this.shouldFail) throw new Error('QuickBooks CompanyInfo lookup failed');
+    return `Company Name for ${params.realmId}`;
+  }
+}
 
 class FakeIntuitAccountingAuthorizationProvider implements IntuitAccountingAuthorizationProvider {
   exchangeShouldFail = false;
@@ -36,9 +45,9 @@ class FakeIntuitAccountingAuthorizationProvider implements IntuitAccountingAutho
     return `https://fake-intuit.example/connect?redirect_uri=${encodeURIComponent(params.redirectUri)}&state=${params.state}`;
   }
 
-  async exchangeCodeForGrant(): Promise<{ refreshToken: string; realmId: string }> {
+  async exchangeCodeForGrant(): Promise<{ refreshToken: string; realmId: string; accessToken: string; environment: string }> {
     if (this.exchangeShouldFail) throw new Error('Intuit denied the request');
-    return { refreshToken: this.nextRefreshToken, realmId: this.nextRealmId! };
+    return { refreshToken: this.nextRefreshToken, realmId: this.nextRealmId!, accessToken: 'fake-access-token', environment: 'sandbox' };
   }
 }
 
@@ -57,6 +66,7 @@ function registerEchoRealmTool(server: McpServer): void {
       content: [{ type: 'text' as const, text: `handled for realm ${getCurrentCompanyContext().realmId}` }],
     }),
   } as any);
+  RegisterTool(server, ListCompaniesTool as any);
 }
 
 async function listen(server: http.Server): Promise<URL> {
@@ -69,11 +79,13 @@ describe('Company-authorization application (#8)', () => {
   let server: http.Server;
   let base: URL;
   let authorizationProvider: FakeIntuitAccountingAuthorizationProvider;
+  let companyInfoProvider: FakeCompanyInfoProvider;
   let grantStore: InstanceType<typeof FirestoreGrantStore>;
   let oauthStore: InstanceType<typeof OAuthStore>;
 
   beforeEach(async () => {
     authorizationProvider = new FakeIntuitAccountingAuthorizationProvider();
+    companyInfoProvider = new FakeCompanyInfoProvider();
     grantStore = new FirestoreGrantStore(new InMemoryFirestore());
     oauthStore = new OAuthStore();
     (oauthStore as unknown as { resolveAccessToken: (token: string) => { sub: string; email: string } | undefined }).resolveAccessToken = (
@@ -103,6 +115,7 @@ describe('Company-authorization application (#8)', () => {
         grantStore,
         pending: new CompanyAuthorizationStore(),
         authorizationProvider,
+        companyInfoProvider,
       },
     });
     base = await listen(server);
@@ -122,6 +135,23 @@ describe('Company-authorization application (#8)', () => {
     await client.connect(transport);
     try {
       const result = await client.callTool({ name: 'create_echo', arguments: { params: { realm_id: realmId } } });
+      const content = result.content as Array<{ type: string; text: string }>;
+      return { text: content[0]?.text ?? '' };
+    } finally {
+      await client.close();
+    }
+  }
+
+  async function callListCompanies(token: string): Promise<{ text: string }> {
+    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+    const { StreamableHTTPClientTransport } = await import('@modelcontextprotocol/sdk/client/streamableHttp.js');
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    const transport = new StreamableHTTPClientTransport(new URL(MCP_HTTP_PATH, base), {
+      requestInit: { headers: { Authorization: `Bearer ${token}` } },
+    });
+    await client.connect(transport);
+    try {
+      const result = await client.callTool({ name: 'list_companies', arguments: { params: {} } });
       const content = result.content as Array<{ type: string; text: string }>;
       return { text: content[0]?.text ?? '' };
     } finally {
@@ -160,11 +190,24 @@ describe('Company-authorization application (#8)', () => {
 
     const grant = await grantStore.forGrant({ employeeSub: EMPLOYEE_A.sub, realmId: 'company-a' }).read();
     expect(grant?.refreshToken).toBe('refresh-token-from-intuit');
+    expect(grant?.companyName).toBe('Company Name for company-a');
 
     // Reused: a second, independent conversation (fresh MCP client/transport)
     // for the same employee no longer needs to authorize.
     const { text: second } = await callTool(TOKEN_A, 'company-a');
     expect(second).toBe('handled for realm company-a');
+  });
+
+  it('falls back to the realm id as the Company name when the CompanyInfo lookup fails, without blocking authorization', async () => {
+    companyInfoProvider.shouldFail = true;
+    const { text: prompt } = await callTool(TOKEN_A, 'company-a');
+    const authorizeUrl = prompt.match(/https?:\S+/)![0];
+
+    const callbackResponse = await completeAuthorization(authorizeUrl, 'company-a');
+    expect(callbackResponse.status).toBe(200);
+
+    const grant = await grantStore.forGrant({ employeeSub: EMPLOYEE_A.sub, realmId: 'company-a' }).read();
+    expect(grant?.companyName).toBe('company-a');
   });
 
   it('refuses the grant when the employee authorizes a different Company than the one requested', async () => {
@@ -255,5 +298,35 @@ describe('Company-authorization application (#8)', () => {
     } finally {
       await client.close();
     }
+  });
+
+  describe('list_companies (issue #9)', () => {
+    it('lists the Companies the calling employee has authorized, each with its name, realm_id and health', async () => {
+      await completeAuthorization((await callTool(TOKEN_A, 'company-a')).text.match(/https?:\S+/)![0], 'company-a');
+      await completeAuthorization((await callTool(TOKEN_A, 'company-b')).text.match(/https?:\S+/)![0], 'company-b');
+
+      const { text } = await callListCompanies(TOKEN_A);
+      const companies = JSON.parse(text);
+
+      expect(companies).toEqual([
+        { name: 'Company Name for company-a', realm_id: 'company-a', health: 'healthy' },
+        { name: 'Company Name for company-b', realm_id: 'company-b', health: 'healthy' },
+      ]);
+    });
+
+    it('never lists a Company belonging to a different employee', async () => {
+      await completeAuthorization((await callTool(TOKEN_A, 'company-a')).text.match(/https?:\S+/)![0], 'company-a');
+
+      const { text } = await callListCompanies(TOKEN_B);
+      expect(JSON.parse(text)).toEqual([]);
+    });
+
+    it("reflects a Company's real grant health, not just that it was once authorized", async () => {
+      await completeAuthorization((await callTool(TOKEN_A, 'company-a')).text.match(/https?:\S+/)![0], 'company-a');
+      await grantStore.forGrant({ employeeSub: EMPLOYEE_A.sub, realmId: 'company-a' }).recordHealth('unhealthy');
+
+      const { text } = await callListCompanies(TOKEN_A);
+      expect(JSON.parse(text)).toEqual([{ name: 'Company Name for company-a', realm_id: 'company-a', health: 'unhealthy' }]);
+    });
   });
 });

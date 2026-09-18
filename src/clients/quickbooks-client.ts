@@ -7,6 +7,7 @@ import open from 'open';
 import { setDefaultCompanyContext, getCurrentCompanyContext } from '../context/company-context.js';
 import { getCurrentEmployeeContext } from '../context/employee-context.js';
 import { TOKEN_STORE_PATH, FileTokenGrantStore, type TokenGrantStore } from './token-grant-store.js';
+import { isAuthInvalidationError } from '../helpers/intuit-auth-errors.js';
 
 // Use override: true so that values from the token store always win over any
 // empty-string placeholders a host app (e.g. Claude Desktop) may inject via
@@ -94,78 +95,6 @@ export class QuickbooksClient {
   private isTokenExpiredOrExpiringSoon(): boolean {
     if (!this.accessToken || !this.accessTokenExpiry) return true;
     return this.accessTokenExpiry <= new Date(Date.now() + QuickbooksClient.TOKEN_REFRESH_BUFFER_MS);
-  }
-
-  // Distinguish a genuinely dead refresh token (revoked, expired, or rotated
-  // out — Intuit answers HTTP 400 invalid_grant, or 401) from a transient
-  // failure (5xx, 429, network timeout). Only the former warrants telling the
-  // operator to re-authorize; a transient failure must stay retryable so it
-  // self-heals. Conservative: anything not clearly an auth-invalidation is
-  // treated as transient, so an outage never produces a false "re-authorize"
-  // alarm.
-  //
-  // NOTE on shape: intuit-oauth 4.x does NOT surface invalid_grant in a tidy
-  // field. Verified empirically against v4.2.1 — on a rejected refresh token
-  // the error's message/error is the axios string "Request failed with status
-  // code 400", error_description is "", authResponse.response is "" and
-  // authResponse.status is a function returning undefined. So the reliably
-  // available signal is the HTTP status embedded in that message; we also check
-  // any structured fields in case a future version populates them.
-  private isAuthInvalidation(error: unknown): boolean {
-    // Walk the error's cause chain (bounded) so a wrapped error still classifies
-    // correctly regardless of how many layers deep the real signal sits — our
-    // own wrapper adds one level, and some axios versions attach a `cause`.
-    let cur: unknown = error;
-    for (let depth = 0; depth < 4 && cur != null; depth++) {
-      if (this.classifyOneError(cur)) return true;
-      cur = (cur as { cause?: unknown }).cause;
-    }
-    return false;
-  }
-
-  // Classify a SINGLE error object (no cause traversal — the caller walks the
-  // chain). Returns true only for a genuine auth-invalidation.
-  private classifyOneError(raw: unknown): boolean {
-    const asObj = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
-
-    // Explicit OAuth error fields, when populated.
-    const errField = String(asObj?.error ?? "").toLowerCase();
-    const errDesc = String(asObj?.error_description ?? "").toLowerCase();
-    if (errField.includes("invalid_grant") || errDesc.includes("invalid_grant")) return true;
-
-    // Numeric HTTP status from whichever field carries it (incl. intuit-oauth's
-    // authResponse.status() accessor).
-    let status: number | undefined;
-    const ar = asObj?.authResponse as { status?: unknown; response?: { status?: unknown } } | undefined;
-    if (ar) {
-      if (typeof ar.status === "function") {
-        try {
-          const s = Number((ar.status as () => unknown)());
-          if (!Number.isNaN(s)) status = s;
-        } catch {
-          /* accessor threw — fall through to message parsing */
-        }
-      } else if (typeof ar.status === "number") {
-        status = ar.status;
-      }
-      if (status === undefined && ar.response && typeof ar.response.status === "number") {
-        status = ar.response.status;
-      }
-    }
-    if (status === undefined && typeof asObj?.status === "number") status = asObj.status as number;
-
-    // Fallback: parse the axios-style message ("Request failed with status code
-    // NNN") — the only signal intuit-oauth 4.x reliably exposes on invalid_grant
-    // (its response body is discarded). The \b prevents a 4-digit number from
-    // matching its 3-digit prefix.
-    const message = (raw instanceof Error ? raw.message : String(raw ?? "")).toLowerCase();
-    if (message.includes("invalid_grant")) return true;
-    if (status === undefined) {
-      const m = message.match(/status code (\d{3})\b/);
-      if (m) status = Number(m[1]);
-    }
-
-    return status === 400 || status === 401;
   }
 
   // Single refresh network call. Returns the widened token object — the
@@ -411,7 +340,7 @@ export class QuickbooksClient {
           // possibly-stale disk value on a mere blip could discard a valid
           // (e.g. rotated-but-unpersisted) token, so rethrow and let the caller
           // retry with the token intact.
-          if (!this.isAuthInvalidation(firstErr)) {
+          if (!isAuthInvalidationError(firstErr)) {
             throw firstErr;
           }
           const latest = this.grantStore.readRefreshToken();
@@ -503,7 +432,7 @@ export class QuickbooksClient {
             // the caller sees a retryable error and the preserved in-memory
             // token self-heals on the next request. Never discard a valid token
             // or launch a browser flow over a temporary outage.
-            if (!this.isAuthInvalidation(error)) {
+            if (!isAuthInvalidationError(error)) {
               throw error;
             }
             // Past here the refresh token is genuinely dead (revoked, expired

@@ -65,4 +65,26 @@ describe('InMemoryFirestore', () => {
     });
     expect(result).toBe(1);
   });
+
+  it('lists every document stored under a collection, ignoring documents elsewhere', async () => {
+    const store = new InMemoryFirestore();
+    await store.doc('grants/emp-1:company-a').set({ employeeSub: 'emp-1', realmId: 'company-a' });
+    await store.doc('grants/emp-1:company-b').set({ employeeSub: 'emp-1', realmId: 'company-b' });
+    await store.doc('other-grants/emp-1:company-c').set({ employeeSub: 'emp-1', realmId: 'company-c' });
+
+    const docs = await store.listCollection('grants');
+
+    expect(docs).toHaveLength(2);
+    expect(docs).toEqual(
+      expect.arrayContaining([
+        { employeeSub: 'emp-1', realmId: 'company-a' },
+        { employeeSub: 'emp-1', realmId: 'company-b' },
+      ])
+    );
+  });
+
+  it('returns an empty list for a collection with no documents', async () => {
+    const store = new InMemoryFirestore();
+    expect(await store.listCollection('grants')).toEqual([]);
+  });
 });

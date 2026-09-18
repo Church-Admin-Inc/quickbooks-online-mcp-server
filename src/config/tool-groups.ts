@@ -43,6 +43,7 @@ export const TOOL_GROUPS = {
   COMPANY_INFO: "company_info",
   PREFERENCES: "preferences",
   ATTACHABLES: "attachables",
+  COMPANIES: "companies",
 } as const;
 
 export type ToolGroup = (typeof TOOL_GROUPS)[keyof typeof TOOL_GROUPS];
@@ -66,6 +67,9 @@ export const DEFAULT_ENABLED_TOOL_GROUPS: readonly ToolGroup[] = [
   TOOL_GROUPS.DEPOSITS,
   TOOL_GROUPS.CLASSES,
   TOOL_GROUPS.DEPARTMENTS,
+  // Company discovery (issue #9) is core multi-Company plumbing, not an
+  // optional finance workflow, so it ships enabled like classes/departments.
+  TOOL_GROUPS.COMPANIES,
 ];
 
 export const ENABLED_TOOL_GROUPS_ENV = "QUICKBOOKS_ENABLED_TOOL_GROUPS";

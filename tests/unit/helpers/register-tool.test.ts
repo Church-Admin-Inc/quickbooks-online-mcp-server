@@ -420,6 +420,7 @@ describe("Company-authorization checkpoint", () => {
     employeeSub: EMPLOYEE.sub,
     realmId: "named-co",
     refreshToken: "rt",
+    companyName: "Named Co",
     createdAt: new Date(),
     lastRefreshedAt: new Date(),
     lastUsedAt: undefined,
@@ -441,7 +442,27 @@ describe("Company-authorization checkpoint", () => {
 
     expect(handler).not.toHaveBeenCalled();
     expect(result.content[0].text).toContain("named-co");
+    expect(result.content[0].text).toContain("you have not yet authorized");
     expect(result.content[0].text).toContain("https://qbo.example.com/auth/quickbooks/authorize?token=");
+  });
+
+  it("tells the employee to re-authorize, distinctly from first-time authorization, when the grant has gone unhealthy", async () => {
+    setCompanyAuthorizationDeps({
+      grantStore: fakeGrantStore({ ...HEALTHY_GRANT, health: "unhealthy" }),
+      pending: new CompanyAuthorizationStore(),
+    });
+    const handler = jest.fn();
+    const registered = register("create_invoice", z.object({ customer_ref: z.string() }), handler);
+
+    const result = await runWithEmployeeContext(EMPLOYEE, () =>
+      runWithRequestContext({ origin: "https://qbo.example.com" }, () =>
+        registered({ params: { customer_ref: "1", realm_id: "named-co" } })
+      )
+    );
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(result.content[0].text).toContain("no longer valid and must be re-authorized");
+    expect(result.content[0].text).not.toContain("you have not yet authorized");
   });
 
   it("invokes the handler when the calling employee already holds a healthy grant", async () => {

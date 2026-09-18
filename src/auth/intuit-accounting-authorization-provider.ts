@@ -10,6 +10,14 @@ export interface IntuitAccountingGrant {
   refreshToken: string;
   /** The Company (realm) Intuit actually issued the grant for — the employee picks this on Intuit's consent screen, so it must be checked against what was requested. */
   realmId: string;
+  /**
+   * The access token minted alongside the refresh token by this same
+   * exchange (issue #9) — reused by ../http/company-oauth-http.ts to look up
+   * the Company's name via CompanyInfo without a second token exchange.
+   */
+  accessToken: string;
+  /** "sandbox" or "production", needed to pick the right QuickBooks API host when looking up CompanyInfo. */
+  environment: string;
 }
 
 export interface IntuitAccountingAuthorizationProvider {
@@ -68,11 +76,20 @@ export class IntuitAccountingOAuthProvider implements IntuitAccountingAuthorizat
     });
 
     const response = await client.createToken(params.callbackUrl);
-    const token = response.token as unknown as { refresh_token?: string; realmId?: string };
+    const token = response.token as unknown as {
+      refresh_token?: string;
+      realmId?: string;
+      access_token?: string;
+    };
 
-    if (!token.refresh_token || !token.realmId) {
-      throw new Error("Intuit did not return both a refresh token and a realm id");
+    if (!token.refresh_token || !token.realmId || !token.access_token) {
+      throw new Error("Intuit did not return a refresh token, an access token, and a realm id");
     }
-    return { refreshToken: token.refresh_token, realmId: token.realmId };
+    return {
+      refreshToken: token.refresh_token,
+      realmId: token.realmId,
+      accessToken: token.access_token,
+      environment: config.environment,
+    };
   }
 }

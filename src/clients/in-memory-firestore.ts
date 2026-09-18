@@ -29,6 +29,15 @@ export class InMemoryFirestore implements FirestoreLike {
     };
   }
 
+  async listCollection(collectionPath: string): Promise<Record<string, unknown>[]> {
+    const prefix = `${collectionPath}/`;
+    const results: Record<string, unknown>[] = [];
+    for (const [path, data] of this.docs) {
+      if (path.startsWith(prefix)) results.push({ ...data });
+    }
+    return results;
+  }
+
   runTransaction<T>(updateFunction: (transaction: FirestoreTransactionLike) => Promise<T>): Promise<T> {
     const run = this.queue.then(async () => {
       const tx: FirestoreTransactionLike = {

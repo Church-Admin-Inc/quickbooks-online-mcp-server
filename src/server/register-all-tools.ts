@@ -175,6 +175,9 @@ import { UpdateCompanyInfoTool } from "../tools/update-company-info.tool.js";
 // Preferences tools
 import { GetPreferencesTool } from "../tools/get-preferences.tool.js";
 
+// Company discovery (issue #9)
+import { ListCompaniesTool } from "../tools/list-companies.tool.js";
+
 // Attachable tools
 import { CreateAttachableTool } from "../tools/create-attachable.tool.js";
 import { GetAttachableTool } from "../tools/get-attachable.tool.js";
@@ -392,6 +395,9 @@ const TOOL_REGISTRY: ReadonlyArray<{ tool: ToolDefinition<any>; group: ToolGroup
 
   // Preferences
   { tool: GetPreferencesTool, group: TOOL_GROUPS.PREFERENCES },
+
+  // Company discovery
+  { tool: ListCompaniesTool, group: TOOL_GROUPS.COMPANIES },
 
   // Attachables
   { tool: CreateAttachableTool, group: TOOL_GROUPS.ATTACHABLES },

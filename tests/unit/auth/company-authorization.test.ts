@@ -23,6 +23,7 @@ const HEALTHY_GRANT: Grant = {
   employeeSub: EMPLOYEE.sub,
   realmId: 'company-a',
   refreshToken: 'rt',
+  companyName: 'Company A',
   createdAt: new Date(),
   lastRefreshedAt: new Date(),
   lastUsedAt: undefined,
@@ -52,9 +53,10 @@ describe('checkCompanyAuthorization', () => {
     expect(result.authorized).toBe(false);
     if (result.authorized) throw new Error('unreachable');
     expect(result.authorizeUrl.startsWith(`https://qbo.example.com${COMPANY_AUTHORIZE_PATH}?token=`)).toBe(true);
+    expect(result.reason).toBe('missing');
   });
 
-  it('prompts re-authorization when the existing grant is unhealthy', async () => {
+  it('prompts re-authorization when the existing grant is unhealthy, distinguishing it from a missing grant', async () => {
     const grantStore = fakeGrantStore({ ...HEALTHY_GRANT, health: 'unhealthy' });
     const result = await checkCompanyAuthorization(
       { grantStore, pending: new CompanyAuthorizationStore() },
@@ -63,6 +65,8 @@ describe('checkCompanyAuthorization', () => {
       'https://qbo.example.com'
     );
     expect(result.authorized).toBe(false);
+    if (result.authorized) throw new Error('unreachable');
+    expect(result.reason).toBe('unhealthy');
   });
 
   it('checks the grant keyed by the calling employee and the named Company, never another employee', async () => {

@@ -47,6 +47,13 @@ export interface FirestoreLike {
     updateFunction: (transaction: FirestoreTransactionLike) => Promise<T>,
     options?: { maxAttempts?: number }
   ): Promise<T>;
+  /**
+   * Every document currently stored under `collectionPath` (issue #9's
+   * `list_companies`: enumerating the Companies one employee holds grants
+   * for needs a collection scan, unlike every other operation here, which is
+   * a single-document get/set keyed by grant id).
+   */
+  listCollection(collectionPath: string): Promise<Record<string, unknown>[]>;
 }
 
 // ── Domain ───────────────────────────────────────────────────────────────
@@ -63,6 +70,12 @@ export interface Grant {
   employeeSub: string;
   realmId: string;
   refreshToken: string;
+  /**
+   * The Company's human-readable QuickBooks name (issue #9's `list_companies`),
+   * captured once at grant creation from CompanyInfo so it survives even once
+   * the connection later goes unhealthy and QuickBooks can no longer be asked.
+   */
+  companyName: string;
   createdAt: Date;
   lastRefreshedAt: Date;
   lastUsedAt: Date | undefined;
@@ -82,8 +95,12 @@ export interface GrantHandle {
   /** The grant currently persisted, or undefined if none exists yet. */
   read(): Promise<Grant | undefined>;
 
-  /** Persists a brand-new grant (first-touch authorization). */
-  create(refreshToken: string): Promise<Grant>;
+  /**
+   * Persists a brand-new grant (first-touch authorization). `companyName`
+   * defaults to the realm id when omitted (existing callers/tests that
+   * predate issue #9 and don't care about the display name).
+   */
+  create(refreshToken: string, companyName?: string): Promise<Grant>;
 
   /**
    * Exchanges the current refresh token via `refresh` and persists whatever
@@ -104,6 +121,13 @@ export interface GrantHandle {
 
 export interface GrantStore {
   forGrant(key: GrantKey): GrantHandle;
+
+  /**
+   * Every grant currently held by `employeeSub`, across every Company
+   * (issue #9's `list_companies`) — the one place this store is queried by
+   * something other than a single grant key.
+   */
+  listForEmployee(employeeSub: string): Promise<Grant[]>;
 }
 
 interface StoredGrantData {
@@ -111,6 +135,7 @@ interface StoredGrantData {
   employeeSub: string;
   realmId: string;
   refreshToken: string;
+  companyName: string;
   createdAt: string;
   lastRefreshedAt: string;
   lastUsedAt: string | null;
@@ -130,6 +155,9 @@ function toGrant(stored: StoredGrantData): Grant {
     employeeSub: stored.employeeSub,
     realmId: stored.realmId,
     refreshToken: stored.refreshToken,
+    // Falls back to the realm id for any grant created before issue #9 added
+    // this field, so an old stored document still round-trips.
+    companyName: stored.companyName || stored.realmId,
     createdAt: new Date(stored.createdAt),
     lastRefreshedAt: new Date(stored.lastRefreshedAt),
     lastUsedAt: stored.lastUsedAt ? new Date(stored.lastUsedAt) : undefined,
@@ -152,11 +180,19 @@ export class FirestoreGrantStore implements GrantStore {
     return {
       key,
       read: () => this.read(key),
-      create: (refreshToken) => this.create(key, refreshToken),
+      create: (refreshToken, companyName) => this.create(key, refreshToken, companyName),
       refresh: (exchangeToken) => this.refresh(key, exchangeToken),
       recordUse: () => this.recordUse(key),
       recordHealth: (health) => this.recordHealth(key, health),
     };
+  }
+
+  async listForEmployee(employeeSub: string): Promise<Grant[]> {
+    const docs = await this.firestore.listCollection(this.collectionPath);
+    return docs
+      .map((data) => asStoredGrantData(data))
+      .filter((stored) => stored.employeeSub === employeeSub)
+      .map(toGrant);
   }
 
   private docRef(key: GrantKey): FirestoreDocRefLike {
@@ -169,12 +205,13 @@ export class FirestoreGrantStore implements GrantStore {
     return toGrant(asStoredGrantData(snap.data()));
   }
 
-  private async create(key: GrantKey, refreshToken: string): Promise<Grant> {
+  private async create(key: GrantKey, refreshToken: string, companyName?: string): Promise<Grant> {
     const now = new Date().toISOString();
     const stored: StoredGrantData = {
       employeeSub: key.employeeSub,
       realmId: key.realmId,
       refreshToken,
+      companyName: companyName || key.realmId,
       createdAt: now,
       lastRefreshedAt: now,
       lastUsedAt: null,
