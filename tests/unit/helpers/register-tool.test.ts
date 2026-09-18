@@ -10,6 +10,10 @@ import {
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { ToolDefinition } from "../../../src/types/tool-definition";
+import {
+  getCurrentCompanyContext,
+  setDefaultCompanyContext,
+} from "../../../src/context/company-context";
 
 // ── getCrudCategory ──────────────────────────────────────────────────────────
 // Verifies that every verb prefix maps to the correct CRUD category string.
@@ -100,7 +104,9 @@ describe("RegisterTool", () => {
     expect(server.tool).toHaveBeenCalledTimes(1);
     const [name, description, shape, handler] = (server.tool as jest.Mock).mock.calls[0] as any[];
     expect(name).toBe(d.name);
-    expect(description).toBe(d.description);
+    // #4: the description gains a realm_id note at registration time, so it
+    // starts with (rather than equals) the definition's own description.
+    expect(description).toContain(d.description);
     expect(typeof handler).toBe("function");
     // The registered schema is the definition's schema made permissive, so an
     // unsupported parameter survives validation and can be reported instead of
@@ -169,10 +175,12 @@ describe("unsupported parameter reporting", () => {
   };
 
   it("names an unsupported parameter in the response", async () => {
+    // create_invoice is a WRITE tool, so realm_id must be present or the call
+    // is refused before this reporting ever runs (see "realm_id injection").
     const { result } = await runRegistered(
       "create_invoice",
       z.object({ customer_ref: z.string() }),
-      { customer_ref: "1", ship_date: "2026-09-01" }
+      { customer_ref: "1", realm_id: "co-a", ship_date: "2026-09-01" }
     );
     expect(result.content[0].text).toContain("create_invoice does not support");
     expect(result.content[0].text).toContain("ship_date");
@@ -236,5 +244,142 @@ describe("unsupported parameter reporting", () => {
     expect(permissive.parse({ a: "x", extra: 1 }).extra).toBe(1);
     const plain = z.string();
     expect(permissiveParamsSchema(plain)).toBe(plain);
+  });
+});
+
+// ── realm_id injection ───────────────────────────────────────────────────────
+// #4: every tool schema gains a `realm_id` parameter at this single chokepoint
+// (no per-tool edits), required for WRITE/UPDATE/DELETE and optional for READ,
+// stripped before the handler runs, and used to route the call to the named
+// Company via the AsyncLocalStorage context from src/context/company-context.
+describe("realm_id injection", () => {
+  const register = (name: string, schema: any, handler: any) => {
+    const server = { tool: jest.fn() } as unknown as McpServer;
+    RegisterTool(server, { name, description: "d", schema, handler } as any);
+    const call = (server.tool as jest.Mock).mock.calls[0] as any[];
+    return {
+      registered: call?.[3] as any,
+      paramsSchema: call?.[2]?.params as any,
+    };
+  };
+
+  it("adds realm_id to every registered schema", () => {
+    const { paramsSchema } = register("get_invoice", z.object({ id: z.string() }), jest.fn());
+    expect(paramsSchema.parse({ id: "1", realm_id: "123" }).realm_id).toBe("123");
+  });
+
+  it("makes realm_id required for a WRITE tool's schema", () => {
+    const { paramsSchema } = register("create_invoice", z.object({ customer_ref: z.string() }), jest.fn());
+    expect(paramsSchema.safeParse({ customer_ref: "1" }).success).toBe(false);
+    expect(paramsSchema.safeParse({ customer_ref: "1", realm_id: "co-a" }).success).toBe(true);
+  });
+
+  it("makes realm_id required for UPDATE and DELETE tools' schemas", () => {
+    const update = register("update_customer", z.object({ id: z.string() }), jest.fn());
+    expect(update.paramsSchema.safeParse({ id: "1" }).success).toBe(false);
+    const del = register("delete_bill", z.object({ id: z.string() }), jest.fn());
+    expect(del.paramsSchema.safeParse({ id: "1" }).success).toBe(false);
+  });
+
+  it("makes realm_id optional for a READ tool's schema", () => {
+    const { paramsSchema } = register("get_invoice", z.object({ id: z.string() }), jest.fn());
+    expect(paramsSchema.safeParse({ id: "1" }).success).toBe(true);
+  });
+
+  it("refuses a WRITE call missing realm_id without invoking the handler", async () => {
+    const handler = jest.fn();
+    const { registered } = register("create_invoice", z.object({ customer_ref: z.string() }), handler);
+    const result = await registered({ params: { customer_ref: "1" } });
+    expect(handler).not.toHaveBeenCalled();
+    expect(result.content[0].text).toContain("create_invoice");
+    expect(result.content[0].text).toContain("realm_id");
+  });
+
+  it("refuses an UPDATE or DELETE call missing realm_id without invoking the handler", async () => {
+    const updateHandler = jest.fn();
+    const update = register("update_customer", z.object({ id: z.string() }), updateHandler);
+    await update.registered({ params: { id: "1" } });
+    expect(updateHandler).not.toHaveBeenCalled();
+
+    const deleteHandler = jest.fn();
+    const del = register("delete_bill", z.object({ id: z.string() }), deleteHandler);
+    await del.registered({ params: { id: "1" } });
+    expect(deleteHandler).not.toHaveBeenCalled();
+  });
+
+  it("strips realm_id before the handler runs, for both writes and reads", async () => {
+    const seen: any[] = [];
+    const handler = jest.fn(async (args: any) => {
+      seen.push(args.params);
+      return { content: [{ type: "text", text: "ok" }] };
+    });
+    const { registered } = register("create_invoice", z.object({ customer_ref: z.string() }), handler);
+    await registered({ params: { customer_ref: "1", realm_id: "co-a" } });
+    expect(seen[0]).toEqual({ customer_ref: "1" });
+  });
+
+  it("routes a WRITE call to the Company named in realm_id", async () => {
+    setDefaultCompanyContext({ realmId: "default-co" });
+    const handler = jest.fn(async () => ({
+      content: [{ type: "text", text: getCurrentCompanyContext().realmId }],
+    }));
+    const { registered } = register("create_invoice", z.object({ customer_ref: z.string() }), handler);
+    const result = await registered({ params: { customer_ref: "1", realm_id: "named-co" } });
+    expect(result.content[0].text).toBe("named-co");
+  });
+
+  it("falls back to the session Company for a READ call with no realm_id", async () => {
+    setDefaultCompanyContext({ realmId: "default-co" });
+    const handler = jest.fn(async () => ({
+      content: [{ type: "text", text: getCurrentCompanyContext().realmId }],
+    }));
+    const { registered } = register("get_invoice", z.object({ id: z.string() }), handler);
+    const result = await registered({ params: { id: "1" } });
+    expect(result.content[0].text).toBe("default-co");
+  });
+
+  it("routes a READ call to the Company named in realm_id when provided", async () => {
+    setDefaultCompanyContext({ realmId: "default-co" });
+    const handler = jest.fn(async () => ({
+      content: [{ type: "text", text: getCurrentCompanyContext().realmId }],
+    }));
+    const { registered } = register("get_invoice", z.object({ id: z.string() }), handler);
+    const result = await registered({ params: { id: "1", realm_id: "named-co" } });
+    expect(result.content[0].text).toBe("named-co");
+  });
+
+  it("mentions realm_id in the description so its meaning is unmissable", () => {
+    const server = { tool: jest.fn() } as unknown as McpServer;
+    RegisterTool(server, {
+      name: "create_invoice",
+      description: "Create an invoice.",
+      schema: z.object({ customer_ref: z.string() }),
+      handler: jest.fn(),
+    } as any);
+    const [, description] = (server.tool as jest.Mock).mock.calls[0] as any[];
+    expect(description).toContain("realm_id");
+  });
+
+  it("still invokes a READ tool's handler when the call has no params object at all", async () => {
+    setDefaultCompanyContext({ realmId: "default-co" });
+    const handler = jest.fn(async () => ({
+      content: [{ type: "text", text: getCurrentCompanyContext().realmId }],
+    }));
+    const { registered } = register("get_invoice", z.object({ id: z.string() }), handler);
+    const result = await registered({});
+    expect((handler as jest.Mock).mock.calls[0][0]).toEqual({});
+    expect(result.content[0].text).toBe("default-co");
+  });
+
+  it("still reports unsupported parameters alongside realm_id handling", async () => {
+    const handler = jest.fn(async () => ({ content: [{ type: "text", text: "ok" }] }));
+    const { registered } = register("create_invoice", z.object({ customer_ref: z.string() }), handler);
+    const result = await registered({
+      params: { customer_ref: "1", realm_id: "co-a", ship_date: "2026-09-01" },
+    });
+    expect(result.content[0].text).toContain("does not support");
+    expect(result.content[0].text).toContain("ship_date");
+    const call = handler.mock.calls[0] as any[];
+    expect(call[0].params).toEqual({ customer_ref: "1" });
   });
 });
