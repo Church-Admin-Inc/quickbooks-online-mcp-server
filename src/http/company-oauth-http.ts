@@ -9,7 +9,10 @@ import { IntuitCompanyInfoProvider, type CompanyInfoProvider } from "../auth/com
 import { loadIntuitFederationConfig } from "../auth/oauth-config.js";
 import { FirestoreGrantStore, type GrantStore } from "../clients/firestore-grant-store.js";
 import { createFirestore } from "../clients/cloud-firestore.js";
-import { guardOAuthEndpoint } from "./oauth-http.js";
+import {
+  renderAuthorizationPage,
+  type AuthorizationPage,
+} from "./authorization-page.js";
 
 /**
  * The browser-facing half of the Company-authorization flow (issue #8): the
@@ -48,25 +51,44 @@ export function createDefaultCompanyOAuthDeps(): CompanyOAuthDeps {
   };
 }
 
-/**
- * Escapes the HTML-significant characters in text interpolated into the pages
- * below. Applied by sendHtml() to every page it renders rather than at each
- * call site, so a future page cannot reintroduce an injection by forgetting
- * it. Load-bearing for the Company name (../auth/company-info-provider.ts):
- * it comes from QuickBooks' own CompanyInfo — set by whoever administers that
- * Company, not by this app — so it is untrusted input, exactly as
- * ../helpers/register-tool.ts's escapeMarkdown() treats it.
- */
-function escapeHtml(text: string): string {
-  return text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+function sendPage(res: http.ServerResponse, status: number, page: AuthorizationPage): void {
+  res.writeHead(status, { "Content-Type": "text/html", "Cache-Control": "no-store" });
+  res.end(renderAuthorizationPage(page));
 }
 
-function sendHtml(res: http.ServerResponse, status: number, title: string, message: string): void {
-  res.writeHead(status, { "Content-Type": "text/html", "Cache-Control": "no-store" });
-  res.end(
-    `<html><body style="display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;margin:0;font-family:Arial,sans-serif;text-align:center">` +
-      `<h2>${escapeHtml(title)}</h2><p>${escapeHtml(message)}</p></body></html>`
-  );
+/** Reused verbatim by both endpoints: either half of the flow can be the one that finds the token dead. */
+const EXPIRED_PAGE: AuthorizationPage = {
+  outcome: "failure",
+  heading: "This authorization link has expired",
+  detail:
+    "Authorization links are single-use and last 10 minutes. Ask Claude to connect the Company again to " +
+    "get a fresh one.",
+};
+
+/**
+ * HTML counterpart to guardOAuthEndpoint, for the two endpoints an employee
+ * reaches in a browser: the shared guard answers with JSON, which /token and
+ * the other machine-facing endpoints need but which a browser renders as a
+ * raw blob. Same contract otherwise — an unhandled throw becomes a response
+ * rather than an unhandled rejection that hangs the connection.
+ */
+async function guardCompanyPage(res: http.ServerResponse, run: () => void | Promise<void>): Promise<void> {
+  try {
+    await run();
+  } catch (error) {
+    console.error("[company-oauth] Unhandled error in Company-authorization endpoint:", error);
+    if (!res.headersSent) {
+      sendPage(res, 500, {
+        outcome: "failure",
+        heading: "Something went wrong",
+        detail:
+          "QuickBooks authorization could not be completed, and the problem is on our side rather than " +
+          "yours. Ask Claude to try again; if it keeps happening, report it.",
+      });
+    } else if (!res.writableEnded) {
+      res.end();
+    }
+  }
 }
 
 function handleCompanyAuthorize(
@@ -79,7 +101,7 @@ function handleCompanyAuthorize(
   const token = url.searchParams.get("token");
   const start = token ? deps.pending.consume(token) : undefined;
   if (!start) {
-    sendHtml(res, 400, "This authorization link has expired.", "Ask Claude to retry the QuickBooks tool call to get a fresh link.");
+    sendPage(res, 400, EXPIRED_PAGE);
     return;
   }
 
@@ -105,7 +127,7 @@ async function handleCompanyCallback(
   const state = url.searchParams.get("state");
   const pending = state ? deps.pending.consume(state) : undefined;
   if (!pending) {
-    sendHtml(res, 400, "This authorization link has expired.", "Ask Claude to retry the QuickBooks tool call to get a fresh link.");
+    sendPage(res, 400, EXPIRED_PAGE);
     return;
   }
 
@@ -117,7 +139,11 @@ async function handleCompanyCallback(
     });
   } catch (error) {
     console.error("[company-oauth] Intuit Accounting exchange failed:", error);
-    sendHtml(res, 400, "QuickBooks authorization failed.", "Please ask Claude to retry the tool call.");
+    sendPage(res, 400, {
+      outcome: "failure",
+      heading: "QuickBooks authorization failed",
+      detail: "Intuit did not complete the sign-in. Ask Claude to try connecting the Company again.",
+    });
     return;
   }
 
@@ -129,12 +155,13 @@ async function handleCompanyCallback(
     // than the one the tool call named. Refuse rather than silently
     // authorizing the wrong Company, or attributing this grant to the one
     // that was requested.
-    sendHtml(
-      res,
-      400,
-      "Wrong Company authorized.",
-      "You authorized a different QuickBooks Company than the one requested. Ask Claude to retry the tool call and pick the matching Company when signing in."
-    );
+    sendPage(res, 400, {
+      outcome: "failure",
+      heading: "That is a different Company",
+      detail:
+        "You signed in to a different QuickBooks Company than the one your request named, so nothing was " +
+        "connected. Ask Claude to try again and pick the matching Company.",
+    });
     return;
   }
 
@@ -161,12 +188,11 @@ async function handleCompanyCallback(
   // Names the Company that was actually connected: an open flow's employee
   // never named one going in, so the page is their only confirmation of
   // which Company they just picked.
-  sendHtml(
-    res,
-    200,
-    "✓ QuickBooks authorized",
-    `${companyName ?? grant.realmId} is now connected. You can close this window and return to Claude.`
-  );
+  sendPage(res, 200, {
+    outcome: "success",
+    heading: `${companyName ?? grant.realmId} is connected`,
+    detail: "You can close this window and return to Claude.",
+  });
 }
 
 /**
@@ -182,11 +208,11 @@ export async function tryHandleCompanyOAuthRequest(
   deps: CompanyOAuthDeps
 ): Promise<boolean> {
   if (pathname === COMPANY_AUTHORIZE_PATH && req.method === "GET") {
-    await guardOAuthEndpoint(res, () => handleCompanyAuthorize(req, res, url, origin, deps));
+    await guardCompanyPage(res, () => handleCompanyAuthorize(req, res, url, origin, deps));
     return true;
   }
   if (pathname === COMPANY_CALLBACK_PATH && req.method === "GET") {
-    await guardOAuthEndpoint(res, () => handleCompanyCallback(req, res, url, origin, deps));
+    await guardCompanyPage(res, () => handleCompanyCallback(req, res, url, origin, deps));
     return true;
   }
   return false;
