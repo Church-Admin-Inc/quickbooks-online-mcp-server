@@ -143,3 +143,43 @@ Once deployed, add a connector in claude.ai pointing at
 `https://<the run.app URL>/mcp`, complete Intuit sign-in, and run a tool
 call — this is the acceptance criterion in #13 that only a human, signed
 into claude.ai, can actually exercise.
+
+## Continuous deployment from `main` (Cloud Build)
+
+`cloudbuild.yaml` at the repo root runs the test suite, builds the image, and
+rolls all three targets — the service and both maintenance jobs — pinned to
+`:$SHORT_SHA`. A release is only whole when all three move: the daily sweep
+is where a stale image does real harm, and rolling it by hand is exactly the
+step that gets forgotten.
+
+One-time setup. Connecting the GitHub repository is interactive (it installs
+the Cloud Build GitHub App, which needs admin on the `Church-Admin-Inc` org),
+so it is done in the console at Cloud Build → Repositories → Create host
+connection, then Link repository. Afterwards:
+
+```
+# The build's service account deploys as the runtime service account.
+gcloud projects add-iam-policy-binding <PROJECT_ID> \
+  --member="serviceAccount:<PROJECT_NUMBER>@cloudbuild.gserviceaccount.com" \
+  --role=roles/run.admin
+
+gcloud iam service-accounts add-iam-policy-binding \
+  qbo-mcp-server@<PROJECT_ID>.iam.gserviceaccount.com --project=<PROJECT_ID> \
+  --member="serviceAccount:<PROJECT_NUMBER>@cloudbuild.gserviceaccount.com" \
+  --role=roles/iam.serviceAccountUser
+
+gcloud builds triggers create github --project=<PROJECT_ID> --region=<REGION> \
+  --name=deploy-main --repo-name=quickbooks-online-mcp-server \
+  --repo-owner=Church-Admin-Inc --branch-pattern='^main$' \
+  --build-config=cloudbuild.yaml
+```
+
+`roles/run.admin` is broad: it lets any build on `main` reconfigure the
+service, not merely swap its image. The narrower `roles/run.developer` is
+enough for `run deploy --image` and `run jobs update --image`, and is worth
+preferring if the trigger is ever widened beyond this one build config.
+
+Note that a merge to `main` now reaches production with no human in between,
+and there is no staging environment. The test suite is the only gate. If that
+becomes uncomfortable, the cheapest change is to trigger on a tag rather than
+a branch, leaving `main` merges to build but not deploy.

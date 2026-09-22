@@ -1,0 +1,87 @@
+# Continuous deployment: every push to main that passes the test suite rolls
+# the Cloud Run service and both maintenance jobs (issue #13's deployment,
+# automated). Driven by a Cloud Build trigger — see docs/deploy.md.
+#
+# The service and the two jobs share one image, and a release is only whole
+# when all three move: the daily sweep is where a stale image does real harm
+# (it is the path that must not resurrect a revoked grant), so it is rolled
+# here rather than by hand. Every step pins ${_IMAGE}:${SHORT_SHA} — an
+# immutable tag — so a job can never drift onto a later build the service
+# never saw. `latest` is moved alongside it purely as a convenience for
+# humans running an ad-hoc `gcloud builds submit`.
+
+substitutions:
+  _REGION: us-central1
+  _SERVICE: qbo-mcp-server
+  _IMAGE: us-central1-docker.pkg.dev/${PROJECT_ID}/qbo-mcp-server/qbo-mcp-server
+  _RUNTIME_SA: qbo-mcp-server@${PROJECT_ID}.iam.gserviceaccount.com
+
+steps:
+  # The gate. GitHub Actions runs this same suite on the same commit, but it
+  # cannot report into this build, so the deploy verifies for itself rather
+  # than trusting a green tick it cannot see. jest.config.js enforces the
+  # coverage thresholds, so a drop fails the build here too.
+  - id: test
+    name: node:22-slim
+    entrypoint: bash
+    args:
+      - -c
+      - npm ci && npm run lint && npm test -- --runInBand
+
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --tag=${_IMAGE}:${SHORT_SHA}
+      - --tag=${_IMAGE}:latest
+      - .
+
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args: [push, --all-tags, "${_IMAGE}"]
+
+  # Only the image changes. Env vars and secrets stay as the service and jobs
+  # already hold them (docs/deploy.md sets those once), so this cannot quietly
+  # drop MCP_HTTP_ALLOWED_HOSTS or GOOGLE_CLOUD_PROJECT — the two whose
+  # absence fails silently rather than loudly.
+  - id: deploy-service
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE}
+      - --region=${_REGION}
+      - --image=${_IMAGE}:${SHORT_SHA}
+
+  - id: deploy-job-daily
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    args:
+      - run
+      - jobs
+      - update
+      - qbo-grant-maintenance-daily
+      - --region=${_REGION}
+      - --image=${_IMAGE}:${SHORT_SHA}
+
+  - id: deploy-job-weekly
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    args:
+      - run
+      - jobs
+      - update
+      - qbo-grant-maintenance-weekly
+      - --region=${_REGION}
+      - --image=${_IMAGE}:${SHORT_SHA}
+
+images:
+  - ${_IMAGE}:${SHORT_SHA}
+  - ${_IMAGE}:latest
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+
+timeout: 1200s
