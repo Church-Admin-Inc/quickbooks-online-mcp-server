@@ -37,4 +37,6 @@ Ambiguous on its own; always qualify.
   [[Company]], represented by a stored refresh token for that [[Realm ID]].
 
 The two are independent: re-establishing an MCP connection does nothing to a
-QuickBooks connection.
+QuickBooks connection. A QuickBooks connection is established only by the
+`authorize_company` tool or by naming an unauthorized [[Company]] in a tool
+call — never from an MCP client's own connector settings.

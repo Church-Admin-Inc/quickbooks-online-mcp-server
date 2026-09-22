@@ -22,6 +22,7 @@ const { CompanyAuthorizationStore } = await import('../../src/auth/company-autho
 const { FirestoreGrantStore } = await import('../../src/clients/firestore-grant-store');
 const { InMemoryFirestore } = await import('../../src/clients/in-memory-firestore');
 const { ListCompaniesTool } = await import('../../src/tools/list-companies.tool');
+const { AuthorizeCompanyTool } = await import('../../src/tools/authorize-company.tool');
 
 const EMPLOYEE_A = { sub: 'intuit-sub-a', email: 'a@example.com' };
 const EMPLOYEE_B = { sub: 'intuit-sub-b', email: 'b@example.com' };
@@ -30,9 +31,10 @@ const TOKEN_B = 'bearer-token-b';
 
 class FakeCompanyInfoProvider {
   shouldFail = false;
+  nextName: string | undefined;
   async fetchCompanyName(params: { realmId: string }): Promise<string> {
     if (this.shouldFail) throw new Error('QuickBooks CompanyInfo lookup failed');
-    return `Company Name for ${params.realmId}`;
+    return this.nextName ?? `Company Name for ${params.realmId}`;
   }
 }
 
@@ -67,6 +69,7 @@ function registerEchoRealmTool(server: McpServer): void {
     }),
   } as any);
   RegisterTool(server, ListCompaniesTool as any);
+  RegisterTool(server, AuthorizeCompanyTool as any);
 }
 
 async function listen(server: http.Server): Promise<URL> {
@@ -327,6 +330,91 @@ describe('Company-authorization application (#8)', () => {
 
       const { text } = await callListCompanies(TOKEN_A);
       expect(JSON.parse(text)).toEqual([{ name: 'Company Name for company-a', realm_id: 'company-a', health: 'unhealthy' }]);
+    });
+  });
+
+  async function callNoArgTool(token: string, name: string): Promise<{ text: string }> {
+    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+    const { StreamableHTTPClientTransport } = await import('@modelcontextprotocol/sdk/client/streamableHttp.js');
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    const transport = new StreamableHTTPClientTransport(new URL(MCP_HTTP_PATH, base), {
+      requestInit: { headers: { Authorization: `Bearer ${token}` } },
+    });
+    await client.connect(transport);
+    try {
+      const result = await client.callTool({ name, arguments: { params: {} } });
+      const content = result.content as Array<{ type: string; text: string }>;
+      return { text: content[0]?.text ?? '' };
+    } finally {
+      await client.close();
+    }
+  }
+
+  describe('connecting a Company without knowing its Realm ID (#29)', () => {
+    it('connects whichever Company the employee picks, with no realm_id given up front', async () => {
+      const { text } = await callNoArgTool(TOKEN_A, 'authorize_company');
+      expect(text).toContain('Connect a QuickBooks Company');
+      const authorizeUrl = text.match(/https?:\/\/[^\s)]+/)![0];
+
+      // The employee picks a Company this flow never named.
+      const callbackResponse = await completeAuthorization(authorizeUrl, 'company-picked-on-intuit');
+      expect(callbackResponse.status).toBe(200);
+      const body = await callbackResponse.text();
+      expect(body).toContain('QuickBooks authorized');
+      expect(body).toContain('Company Name for company-picked-on-intuit');
+
+      const grant = await grantStore
+        .forGrant({ employeeSub: EMPLOYEE_A.sub, realmId: 'company-picked-on-intuit' })
+        .read();
+      expect(grant?.refreshToken).toBe('refresh-token-from-intuit');
+
+      // And it shows up in the employee's Companies, the acceptance criterion
+      // that closes the loop for someone who started with nothing.
+      const { text: listed } = await callListCompanies(TOKEN_A);
+      expect(listed).toContain('company-picked-on-intuit');
+    });
+
+    it('attributes the grant to the employee who asked, not to anyone else', async () => {
+      const { text } = await callNoArgTool(TOKEN_B, 'authorize_company');
+      const authorizeUrl = text.match(/https?:\/\/[^\s)]+/)![0];
+      await completeAuthorization(authorizeUrl, 'company-b');
+
+      expect(await grantStore.forGrant({ employeeSub: EMPLOYEE_B.sub, realmId: 'company-b' }).read()).toBeDefined();
+      expect(await grantStore.forGrant({ employeeSub: EMPLOYEE_A.sub, realmId: 'company-b' }).read()).toBeUndefined();
+    });
+
+    it('still refuses a mismatched Company on a realm-directed flow (#8 is unaffected)', async () => {
+      const { text: prompt } = await callTool(TOKEN_A, 'company-a');
+      const authorizeUrl = prompt.match(/https?:\/\/[^\s)]+/)![0];
+
+      const callbackResponse = await completeAuthorization(authorizeUrl, 'a-different-company');
+      expect(callbackResponse.status).toBe(400);
+      expect(await callbackResponse.text()).toContain('Wrong Company authorized');
+    });
+
+    it('escapes a Company name before naming it on the success page', async () => {
+      // A Company name is set by whoever administers that Company, not by
+      // this app, so it reaches the success page as untrusted input.
+      companyInfoProvider.nextName = '<script>alert("x")</script> & Co';
+
+      const { text } = await callNoArgTool(TOKEN_A, 'authorize_company');
+      const authorizeUrl = text.match(/https?:\/\/[^\s)]+/)![0];
+      const body = await (await completeAuthorization(authorizeUrl, 'company-c')).text();
+
+      expect(body).not.toContain('<script>');
+      expect(body).toContain('&#60;script&#62;');
+      expect(body).toContain('&#38;');
+    });
+
+    it('expires the link, and says so, rather than silently connecting nothing', async () => {
+      const { text } = await callNoArgTool(TOKEN_A, 'authorize_company');
+      const authorizeUrl = text.match(/https?:\/\/[^\s)]+/)![0];
+
+      expect((await fetch(authorizeUrl, { redirect: 'manual' })).status).toBe(302);
+      // Single use: the token was consumed by the redirect above.
+      const reuse = await fetch(authorizeUrl, { redirect: 'manual' });
+      expect(reuse.status).toBe(400);
+      expect(await reuse.text()).toContain('expired');
     });
   });
 });

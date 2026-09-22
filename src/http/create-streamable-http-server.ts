@@ -6,6 +6,7 @@ import { runWithEmployeeContext } from "../context/employee-context.js";
 import { runWithRequestContext } from "../context/request-context.js";
 import { setCompanyAuthorizationDeps, setAuditLogger } from "../helpers/register-tool.js";
 import { setListCompaniesDeps } from "../handlers/list-companies.handler.js";
+import { setAuthorizeCompanyDeps } from "../handlers/authorize-company.handler.js";
 import { createDefaultAuditLog, type AuditLogger } from "../audit/audit-log.js";
 import {
   createDefaultOAuthDeps,
@@ -84,6 +85,10 @@ export function createStreamableHttpServer(
   setCompanyAuthorizationDeps({ grantStore: companyAuth.grantStore, pending: companyAuth.pending });
   // list_companies (issue #9) reads the same grant store this checkpoint uses.
   setListCompaniesDeps({ grantStore: companyAuth.grantStore });
+  // The SAME pending store the browser-facing endpoints consume from, for the
+  // same reason the grant store is shared above: a token minted by
+  // authorize_company has to be redeemable by tryHandleCompanyOAuthRequest.
+  setAuthorizeCompanyDeps({ pending: companyAuth.pending });
   // Independent write audit trail (issue #10), same chokepoint as the
   // Company-authorization checkpoint above.
   setAuditLogger(audit);

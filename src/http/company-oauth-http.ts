@@ -48,11 +48,24 @@ export function createDefaultCompanyOAuthDeps(): CompanyOAuthDeps {
   };
 }
 
+/**
+ * Escapes the HTML-significant characters in text interpolated into the pages
+ * below. Applied by sendHtml() to every page it renders rather than at each
+ * call site, so a future page cannot reintroduce an injection by forgetting
+ * it. Load-bearing for the Company name (../auth/company-info-provider.ts):
+ * it comes from QuickBooks' own CompanyInfo — set by whoever administers that
+ * Company, not by this app — so it is untrusted input, exactly as
+ * ../helpers/register-tool.ts's escapeMarkdown() treats it.
+ */
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+}
+
 function sendHtml(res: http.ServerResponse, status: number, title: string, message: string): void {
   res.writeHead(status, { "Content-Type": "text/html", "Cache-Control": "no-store" });
   res.end(
     `<html><body style="display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;margin:0;font-family:Arial,sans-serif;text-align:center">` +
-      `<h2>${title}</h2><p>${message}</p></body></html>`
+      `<h2>${escapeHtml(title)}</h2><p>${escapeHtml(message)}</p></body></html>`
   );
 }
 
@@ -108,7 +121,10 @@ async function handleCompanyCallback(
     return;
   }
 
-  if (grant.realmId !== pending.realmId) {
+  // An open flow (issue #29) named no Company up front — the employee picks
+  // one on Intuit's screen — so there is nothing to mismatch against and
+  // nothing to mis-attribute. A realm-directed flow (issue #8) still refuses.
+  if (pending.realmId !== undefined && grant.realmId !== pending.realmId) {
     // The employee picked a different Company on Intuit's consent screen
     // than the one the tool call named. Refuse rather than silently
     // authorizing the wrong Company, or attributing this grant to the one
@@ -142,7 +158,15 @@ async function handleCompanyCallback(
     .forGrant({ employeeSub: pending.employeeSub, realmId: grant.realmId })
     .create(grant.refreshToken, companyName);
 
-  sendHtml(res, 200, "✓ QuickBooks authorized", "You can close this window and return to Claude.");
+  // Names the Company that was actually connected: an open flow's employee
+  // never named one going in, so the page is their only confirmation of
+  // which Company they just picked.
+  sendHtml(
+    res,
+    200,
+    "✓ QuickBooks authorized",
+    `${companyName ?? grant.realmId} is now connected. You can close this window and return to Claude.`
+  );
 }
 
 /**

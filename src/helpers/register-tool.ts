@@ -158,9 +158,11 @@ function withRealmId<T extends z.ZodType<any, any>>(schema: T, category: CrudCat
  * by definition, ADR 0001) is never injected onto them (issue #9). Without
  * this exemption every READ tool — including one that spans every Company
  * the employee holds a grant for — would get the misleading "falls back to
- * the session Company" note.
+ * the session Company" note. `authorize_company` (issue #29) is here for the
+ * stronger reason that requiring a realm_id would defeat its whole purpose:
+ * it exists to connect a Company whose Realm ID nobody knows yet.
  */
-const NO_REALM_ID_TOOLS = new Set<string>(["list_companies"]);
+const NO_REALM_ID_TOOLS = new Set<string>(["list_companies", "authorize_company"]);
 
 /** Appends a realm_id note to a tool's description so its meaning is unmissable. */
 function describeRealmId(description: string, category: CrudCategory): string {
