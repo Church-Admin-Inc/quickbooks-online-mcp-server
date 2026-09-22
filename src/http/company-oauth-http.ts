@@ -50,9 +50,12 @@ export function createDefaultCompanyOAuthDeps(): CompanyOAuthDeps {
 
 /**
  * Escapes the HTML-significant characters in text interpolated into the pages
- * below. A Company name comes from QuickBooks' own CompanyInfo — set by
- * whoever administers that Company, not by this app — so it is untrusted
- * input, exactly as ../helpers/register-tool.ts's escapeMarkdown() treats it.
+ * below. Applied by sendHtml() to every page it renders rather than at each
+ * call site, so a future page cannot reintroduce an injection by forgetting
+ * it. Load-bearing for the Company name (../auth/company-info-provider.ts):
+ * it comes from QuickBooks' own CompanyInfo — set by whoever administers that
+ * Company, not by this app — so it is untrusted input, exactly as
+ * ../helpers/register-tool.ts's escapeMarkdown() treats it.
  */
 function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -62,7 +65,7 @@ function sendHtml(res: http.ServerResponse, status: number, title: string, messa
   res.writeHead(status, { "Content-Type": "text/html", "Cache-Control": "no-store" });
   res.end(
     `<html><body style="display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;margin:0;font-family:Arial,sans-serif;text-align:center">` +
-      `<h2>${title}</h2><p>${message}</p></body></html>`
+      `<h2>${escapeHtml(title)}</h2><p>${escapeHtml(message)}</p></body></html>`
   );
 }
 
@@ -162,7 +165,7 @@ async function handleCompanyCallback(
     res,
     200,
     "✓ QuickBooks authorized",
-    `${escapeHtml(companyName ?? grant.realmId)} is now connected. You can close this window and return to Claude.`
+    `${companyName ?? grant.realmId} is now connected. You can close this window and return to Claude.`
   );
 }
 

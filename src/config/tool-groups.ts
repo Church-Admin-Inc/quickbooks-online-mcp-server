@@ -67,8 +67,11 @@ export const DEFAULT_ENABLED_TOOL_GROUPS: readonly ToolGroup[] = [
   TOOL_GROUPS.DEPOSITS,
   TOOL_GROUPS.CLASSES,
   TOOL_GROUPS.DEPARTMENTS,
-  // Company discovery (issue #9) is core multi-Company plumbing, not an
-  // optional finance workflow, so it ships enabled like classes/departments.
+  // Company discovery (issue #9) and connection (issue #29) are core
+  // multi-Company plumbing, not an optional finance workflow, so they ship
+  // enabled like classes/departments. Narrowing this group leaves an employee
+  // with no way to connect a Company or to find one they have connected —
+  // pinned by tests/unit/server/register-all-tools.structure.test.ts.
   TOOL_GROUPS.COMPANIES,
 ];
 

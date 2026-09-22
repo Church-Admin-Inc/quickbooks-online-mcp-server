@@ -14,6 +14,7 @@ import { describe, it, expect } from '@jest/globals';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { TOOL_GROUPS, DEFAULT_ENABLED_TOOL_GROUPS } from '../../../src/config/tool-groups';
 
 const dir = dirname(fileURLToPath(import.meta.url));
 const SOURCE_PATH = join(dir, '../../../src/server/register-all-tools.ts');
@@ -43,6 +44,19 @@ describe('registerAllTools extraction', () => {
 
   it('has no duplicate imports', () => {
     expect(new Set(imported).size).toBe(imported.length);
+  });
+
+  it('keeps the Company-connection tools reachable in the default tool surface', () => {
+    // authorize_company (issue #29) is the only way to connect a Company, and
+    // list_companies (issue #9) the only way to find one: an employee whose
+    // enabled groups were narrowed to the default finance subset must still
+    // reach both, or multi-Company mode has no entry point at all.
+    const group = (tool: string) =>
+      source.match(new RegExp(`\\{ tool: ${tool}, group: TOOL_GROUPS\\.(\\w+) \\}`))![1];
+    for (const tool of ['AuthorizeCompanyTool', 'ListCompaniesTool']) {
+      const groupKey = group(tool) as keyof typeof TOOL_GROUPS;
+      expect(DEFAULT_ENABLED_TOOL_GROUPS).toContain(TOOL_GROUPS[groupKey]);
+    }
   });
 
   it('calls RegisterTool exactly once, inside the enabled-groups filter loop', () => {
