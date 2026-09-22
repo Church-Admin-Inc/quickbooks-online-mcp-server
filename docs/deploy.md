@@ -119,10 +119,18 @@ TTL rather than the maintenance job below, deliberately: the retention period
 is stated in the published Privacy Policy, so it has to hold even if no
 scheduled job ever runs again. Firestore deletes expired documents within 24
 hours of their expiry, on its own schedule and at no read/write cost.
-Applying the policy backfills nothing — documents written before it exists
-already carry `expiresAt`, and documents written before that field existed at
-all have none and so never expire; there are only a handful from #10's
-development, and they can be dropped by hand if that matters.
+Applying the policy backfills nothing: a document written before the field
+existed would have no `expiresAt` and so would never expire. That case turned
+out not to exist — when the policy was applied, `audit-log` had never been
+written to in the deployed database (only `grants` was there), so every entry
+the deployment will ever hold is stamped. Worth re-checking if this is ever
+applied to a database that has been running longer.
+
+Applied to the deployed database on 2026-09-22; `gcloud firestore fields ttls
+list` shows it `ACTIVE`. It is a one-time change made by hand, not a build
+step — `cloudbuild.yaml` rolls the image only, and putting this there would
+mean granting the build service account Firestore admin to re-assert an
+unchanged policy on every push.
 
 ## Scheduled grant maintenance (issue #12)
 
