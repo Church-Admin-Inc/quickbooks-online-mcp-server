@@ -129,6 +129,27 @@ describe('GrantMaintenanceJob', () => {
 
       expect(alertNotifier.notify).not.toHaveBeenCalled();
     });
+
+    it('leaves grants that are already unhealthy alone, so a revoked grant stays revoked', async () => {
+      // Without this the daily sweep undoes every revocation the weekly sweep
+      // detected: the refresh token still rotates, so the exchange succeeds
+      // and the grant comes back to life.
+      const grantStore = new FirestoreGrantStore(new FakeFirestore());
+      await grantStore.forGrant(KEY_A).create('seed-a');
+      await grantStore.forGrant(KEY_B).create('seed-b');
+      await grantStore.forGrant(KEY_B).recordHealth('unhealthy');
+      mockRefreshUsingToken.mockResolvedValue(tokenResponse());
+
+      const result = await new GrantMaintenanceJob(grantStore, () => CONFIG, fakeAlertNotifier()).refreshAllGrants();
+
+      expect(result).toEqual({ total: 1, succeeded: 1, failed: [] });
+      expect(mockRefreshUsingToken).toHaveBeenCalledTimes(1);
+      expect(mockRefreshUsingToken).toHaveBeenCalledWith('seed-a');
+      await expect(grantStore.forGrant(KEY_B).read()).resolves.toMatchObject({
+        refreshToken: 'seed-b',
+        health: 'unhealthy',
+      });
+    });
   });
 
   describe('revalidateAllGrants (weekly job)', () => {
@@ -238,6 +259,26 @@ describe('GrantMaintenanceJob', () => {
 
       await job.revalidateAllGrants();
 
+      expect(companyInfoProvider.fetchCompanyName).not.toHaveBeenCalled();
+      await expect(grantStore.forGrant(KEY_A).read()).resolves.toMatchObject({ health: 'unhealthy' });
+    });
+
+    it('leaves grants that are already unhealthy alone', async () => {
+      const grantStore = new FirestoreGrantStore(new FakeFirestore());
+      await grantStore.forGrant(KEY_A).create('seed-a');
+      await grantStore.forGrant(KEY_A).recordHealth('unhealthy');
+      mockRefreshUsingToken.mockResolvedValue(tokenResponse());
+      const companyInfoProvider = fakeCompanyInfoProvider();
+
+      const result = await new GrantMaintenanceJob(
+        grantStore,
+        () => CONFIG,
+        fakeAlertNotifier(),
+        companyInfoProvider
+      ).revalidateAllGrants();
+
+      expect(result).toEqual({ total: 0, succeeded: 0, failed: [] });
+      expect(mockRefreshUsingToken).not.toHaveBeenCalled();
       expect(companyInfoProvider.fetchCompanyName).not.toHaveBeenCalled();
       await expect(grantStore.forGrant(KEY_A).read()).resolves.toMatchObject({ health: 'unhealthy' });
     });

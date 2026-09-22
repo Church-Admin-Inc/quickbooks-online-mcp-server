@@ -18,6 +18,20 @@ export interface IntuitAccountingGrant {
   accessToken: string;
   /** "sandbox" or "production", needed to pick the right QuickBooks API host when looking up CompanyInfo. */
   environment: string;
+  /**
+   * The Intuit `sub` of whoever actually signed in and consented — the same
+   * identifier ../auth/intuit-identity-provider.ts issues at login, since
+   * both flows federate to the same Intuit account (ADR 0002). An
+   * authorization link is a bearer credential anyone it reaches can redeem,
+   * so ../http/company-oauth-http.ts attributes the grant to this identity
+   * rather than to the employee who asked for the link.
+   */
+  authorizingSub: string;
+}
+
+/** The slice of Intuit's OpenID userinfo response this module reads — the SDK types it as unknown. */
+interface IntuitUserInfoResponse {
+  json?: Record<string, unknown>;
 }
 
 export interface IntuitAccountingAuthorizationProvider {
@@ -60,7 +74,12 @@ export class IntuitAccountingOAuthProvider implements IntuitAccountingAuthorizat
     });
     return client
       .authorizeUri({
-        scope: [OAuthClient.scopes.Accounting as string],
+        // `openid` rides along with Accounting so the exchange below can name
+        // who consented, without a second round trip to Intuit. Only `sub` is
+        // read, so the wider Email/Profile scopes the login flow asks for
+        // (../auth/intuit-identity-provider.ts) would widen this consent
+        // screen for nothing.
+        scope: [OAuthClient.scopes.Accounting as string, OAuthClient.scopes.OpenId as string],
         state: params.state,
       })
       .toString();
@@ -85,11 +104,25 @@ export class IntuitAccountingOAuthProvider implements IntuitAccountingAuthorizat
     if (!token.refresh_token || !token.realmId || !token.access_token) {
       throw new Error("Intuit did not return a refresh token, an access token, and a realm id");
     }
+
+    // Reads the same OpenID userinfo endpoint the login flow uses
+    // (../auth/intuit-identity-provider.ts), against the token just minted.
+    // Fails closed: a grant whose consenting identity is unknown cannot be
+    // attributed safely, so it is refused rather than stored under whoever
+    // happened to mint the link.
+    const userInfo = (await client.getUserInfo()) as IntuitUserInfoResponse;
+    const claims = userInfo.json;
+    const authorizingSub = typeof claims?.sub === "string" ? claims.sub : undefined;
+    if (!authorizingSub) {
+      throw new Error("Intuit did not return the identity that authorized this Company");
+    }
+
     return {
       refreshToken: token.refresh_token,
       realmId: token.realmId,
       accessToken: token.access_token,
       environment: config.environment,
+      authorizingSub,
     };
   }
 }

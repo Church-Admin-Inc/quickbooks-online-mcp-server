@@ -11,10 +11,12 @@ import type { IntuitFederationConfig } from "../auth/oauth-config.js";
  * a weekly sweep re-validates that Intuit still honours each grant (not
  * just that its refresh token still rotates - ADR 0002 notes Intuit does
  * not appear to enforce the authorizing employee's in-Company role after
- * grant time), and dormant grants expire after 30 days unused. None of
- * this is wired to an actual scheduler here (Cloud Run deployment is issue
- * #13) - GrantMaintenanceJob is the unit a Cloud Scheduler-triggered
- * endpoint or a Cloud Run Job's entry point calls into.
+ * grant time), and dormant grants expire after 30 days unused. Both the
+ * daily and the weekly sweep skip grants that are already unhealthy - only
+ * a fresh authorization revives one. None of this is wired to an actual
+ * scheduler here (Cloud Run deployment is issue #13) - GrantMaintenanceJob
+ * is the unit a Cloud Scheduler-triggered endpoint or a Cloud Run Job's
+ * entry point calls into.
  */
 
 /**
@@ -100,10 +102,11 @@ export class GrantMaintenanceJob {
    * an on-demand refresh uses (GrantHandle.refresh, see
    * ../clients/firestore-grant-store.ts), keeping each refresh token inside
    * Intuit's rolling 100-day window. One grant failing to refresh never
-   * stops the run - each grant's outcome is isolated and collected.
+   * stops the run - each grant's outcome is isolated and collected. Only
+   * healthy grants are swept: see healthyGrants() below.
    */
   async refreshAllGrants(): Promise<GrantMaintenanceRunResult> {
-    const grants = await this.grantStore.listAll();
+    const grants = await this.healthyGrants();
     return this.runPerGrant(grants, (grant) => this.refreshOne(grant));
   }
 
@@ -111,11 +114,26 @@ export class GrantMaintenanceJob {
    * Weekly job: re-validates every grant with a live QuickBooks call, on
    * top of the same refresh a daily run performs. Catches the case ADR 0002
    * calls out - the refresh token still rotates fine, but the employee's
-   * actual access to this Company's data was revoked in QuickBooks.
+   * actual access to this Company's data was revoked in QuickBooks. Skips
+   * grants that are already unhealthy: there is nothing left to detect.
    */
   async revalidateAllGrants(): Promise<GrantMaintenanceRunResult> {
-    const grants = await this.grantStore.listAll();
+    const grants = await this.healthyGrants();
     return this.runPerGrant(grants, (grant) => this.revalidateOne(grant));
+  }
+
+  /**
+   * The grants the refresh and re-validation sweeps act on. An unhealthy
+   * grant is dead until the employee re-authorizes it through the browser
+   * flow (../http/company-oauth-http.ts), so there is nothing for these
+   * sweeps to keep alive - and touching one would be actively harmful: a
+   * revoked grant whose refresh token still rotates must not be kept warm
+   * against the day something stops refusing it. expireStaleGrants() keeps
+   * its own health guard, in expireOneIfStale().
+   */
+  private async healthyGrants(): Promise<Grant[]> {
+    const grants = await this.grantStore.listAll();
+    return grants.filter((grant) => grant.health === "healthy");
   }
 
   /**
@@ -195,9 +213,14 @@ export class GrantMaintenanceJob {
     await this.markUnhealthy(this.handleFor(grant), grant, "unused for 30 days");
   }
 
-  /** Only records+alerts on the healthy -> unhealthy transition, so a grant that is already unhealthy is never re-alerted on every subsequent sweep. */
+  /**
+   * Records the demotion and alerts on it. Only ever reached for a grant that
+   * is currently healthy - healthyGrants() filters the refresh and
+   * re-validation sweeps, and expireOneIfStale() guards its own call - so a
+   * grant that is already unhealthy is never re-recorded or re-alerted on a
+   * subsequent sweep.
+   */
   private async markUnhealthy(handle: GrantHandle, grant: Grant, reason: string): Promise<void> {
-    if (grant.health !== "healthy") return;
     await handle.recordHealth("unhealthy");
     await this.alertNotifier.notify({
       employeeSub: grant.employeeSub,

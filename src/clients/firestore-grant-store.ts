@@ -105,10 +105,12 @@ export interface GrantHandle {
   /**
    * Exchanges the current refresh token via `refresh` and persists whatever
    * comes back — unconditionally, since Intuit rotates roughly daily rather
-   * than on every call. Concurrent calls for the same key, from this same
-   * store instance, share one underlying refresh (single-flight); a
-   * transactional commit guards against a second store instance (e.g. a
-   * sibling process) racing the same underlying document.
+   * than on every call. Leaves `health` exactly as it was: refreshing an
+   * unhealthy grant rotates its token without reviving it. Concurrent calls
+   * for the same key, from this same store instance, share one underlying
+   * refresh (single-flight); a transactional commit guards against a second
+   * store instance (e.g. a sibling process) racing the same underlying
+   * document.
    */
   refresh(exchangeToken: (currentRefreshToken: string) => Promise<{ refreshToken: string }>): Promise<Grant>;
 
@@ -292,11 +294,18 @@ export class FirestoreGrantStore implements GrantStore {
 
         const { refreshToken } = await exchangeToken(stored.refreshToken);
 
+        // `health` is deliberately carried through untouched rather than set
+        // to "healthy": a refresh is a token rotation, not an authorization
+        // decision. ADR 0002 notes Intuit may keep rotating the refresh token
+        // of a grant whose access to the Company has been revoked, so
+        // promoting on a successful exchange would let the daily maintenance
+        // sweep (../jobs/grant-maintenance.ts) silently undo every revocation
+        // the weekly re-validation detected. Only create() — a fresh consent
+        // flow — and an explicit recordHealth() may promote a grant.
         const updated: StoredGrantData = {
           ...stored,
           refreshToken,
           lastRefreshedAt: new Date().toISOString(),
-          health: "healthy",
         };
         tx.set(ref, updated);
         return toGrant(updated);

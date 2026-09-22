@@ -5,7 +5,11 @@ import {
   CompanyAuthorizationStore,
   PENDING_AUTHORIZATION_WINDOW_SENTENCE,
 } from "../auth/company-authorization.js";
-import { IntuitAccountingOAuthProvider, type IntuitAccountingAuthorizationProvider } from "../auth/intuit-accounting-authorization-provider.js";
+import {
+  IntuitAccountingOAuthProvider,
+  type IntuitAccountingAuthorizationProvider,
+  type IntuitAccountingGrant,
+} from "../auth/intuit-accounting-authorization-provider.js";
 import { IntuitCompanyInfoProvider, type CompanyInfoProvider } from "../auth/company-info-provider.js";
 import { loadIntuitFederationConfig } from "../auth/oauth-config.js";
 import { FirestoreGrantStore, type GrantStore } from "../clients/firestore-grant-store.js";
@@ -133,7 +137,7 @@ async function handleCompanyCallback(
     return;
   }
 
-  let grant: { refreshToken: string; realmId: string; accessToken: string; environment: string };
+  let grant: IntuitAccountingGrant;
   try {
     grant = await deps.authorizationProvider.exchangeCodeForGrant({
       callbackUrl: `${origin}${url.pathname}${url.search}`,
@@ -145,6 +149,24 @@ async function handleCompanyCallback(
       outcome: "failure",
       heading: "QuickBooks authorization failed",
       detail: "Intuit did not complete the sign-in. Ask Claude to try connecting the Company again.",
+    });
+    return;
+  }
+
+  // The start token in the link is a bearer credential: this endpoint is
+  // reached by an anonymous browser, so whoever the link was forwarded to can
+  // complete the flow. Attribution therefore follows the Intuit identity that
+  // actually consented, not the employee who minted the link — otherwise a
+  // forwarded link would file someone else's Company, and their refresh
+  // token, under the minter's name. Both flows federate to the same Intuit
+  // account (ADR 0002), so a legitimate flow always matches.
+  if (grant.authorizingSub !== pending.employeeSub) {
+    sendPage(res, 400, {
+      outcome: "failure",
+      heading: "That link was issued for someone else",
+      detail:
+        "You signed in with a different Intuit account than the one this authorization link was issued to, so " +
+        "nothing was connected. Ask Claude for your own link and open it while signed in as yourself.",
     });
     return;
   }

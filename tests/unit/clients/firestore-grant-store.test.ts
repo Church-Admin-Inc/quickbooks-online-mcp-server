@@ -89,6 +89,24 @@ describe('FirestoreGrantStore', () => {
     expect(refreshed.lastRefreshedAt.getTime()).toBeGreaterThanOrEqual(before!.lastRefreshedAt.getTime());
   });
 
+  it('leaves an unhealthy grant unhealthy, rather than resurrecting it on a successful refresh', async () => {
+    // A refresh is a token rotation, not an authorization decision. Only a
+    // fresh consent flow (create()) may promote a grant back to healthy —
+    // otherwise the daily maintenance sweep silently undoes every revocation
+    // the weekly re-validation detected.
+    const store = new FirestoreGrantStore(new FakeFirestore());
+    await store.forGrant(KEY).create('seed-refresh-token');
+    await store.forGrant(KEY).recordHealth('unhealthy');
+
+    const refreshed = await store.forGrant(KEY).refresh(async () => ({ refreshToken: 'rotated-refresh-token' }));
+
+    expect(refreshed.health).toBe('unhealthy');
+    await expect(store.forGrant(KEY).read()).resolves.toMatchObject({
+      refreshToken: 'rotated-refresh-token',
+      health: 'unhealthy',
+    });
+  });
+
   it('persists a rotated refresh token', async () => {
     const store = new FirestoreGrantStore(new FakeFirestore());
     await store.forGrant(KEY).create('seed-refresh-token');

@@ -12,7 +12,10 @@ import type { AddressInfo } from 'node:net';
 import type http from 'node:http';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { IntuitAccountingAuthorizationProvider } from '../../src/auth/intuit-accounting-authorization-provider';
+import type {
+  IntuitAccountingAuthorizationProvider,
+  IntuitAccountingGrant,
+} from '../../src/auth/intuit-accounting-authorization-provider';
 
 const { createStreamableHttpServer, MCP_HTTP_PATH } = await import('../../src/http/create-streamable-http-server');
 const { RegisterTool } = await import('../../src/helpers/register-tool');
@@ -45,14 +48,22 @@ class FakeIntuitAccountingAuthorizationProvider implements IntuitAccountingAutho
   exchangeShouldFail = false;
   nextRealmId: string | undefined;
   nextRefreshToken = 'refresh-token-from-intuit';
+  /** The Intuit identity that signs in on the consent screen — not necessarily the one that minted the link. */
+  nextAuthorizingSub = EMPLOYEE_A.sub;
 
   authorizationUrl(params: { redirectUri: string; state: string }): string {
     return `https://fake-intuit.example/connect?redirect_uri=${encodeURIComponent(params.redirectUri)}&state=${params.state}`;
   }
 
-  async exchangeCodeForGrant(): Promise<{ refreshToken: string; realmId: string; accessToken: string; environment: string }> {
+  async exchangeCodeForGrant(): Promise<IntuitAccountingGrant> {
     if (this.exchangeShouldFail) throw new Error('Intuit denied the request');
-    return { refreshToken: this.nextRefreshToken, realmId: this.nextRealmId!, accessToken: 'fake-access-token', environment: 'sandbox' };
+    return {
+      refreshToken: this.nextRefreshToken,
+      realmId: this.nextRealmId!,
+      accessToken: 'fake-access-token',
+      environment: 'sandbox',
+      authorizingSub: this.nextAuthorizingSub,
+    };
   }
 }
 
@@ -168,9 +179,19 @@ describe('Company-authorization application (#8)', () => {
     }
   }
 
-  /** Drives the full browser-side flow: start token -> Intuit consent -> callback -> grant persisted. */
-  async function completeAuthorization(authorizeUrl: string, realmId: string): Promise<Response> {
+  /**
+   * Drives the full browser-side flow: start token -> Intuit consent ->
+   * callback -> grant persisted. `authorizingSub` is the Intuit account that
+   * signs in on the consent screen, which the callback attributes the grant
+   * to — defaulting to employee A, who drives most of these tests.
+   */
+  async function completeAuthorization(
+    authorizeUrl: string,
+    realmId: string,
+    authorizingSub: string = EMPLOYEE_A.sub
+  ): Promise<Response> {
     authorizationProvider.nextRealmId = realmId;
+    authorizationProvider.nextAuthorizingSub = authorizingSub;
     const startResponse = await fetch(authorizeUrl, { redirect: 'manual' });
     expect(startResponse.status).toBe(302);
     const intuitUrl = new URL(startResponse.headers.get('location')!);
@@ -305,7 +326,7 @@ describe('Company-authorization application (#8)', () => {
     expect(promptB).toContain('you have not yet authorized');
 
     const authorizeUrlB = promptB.match(/https?:\/\/[^\s)]+/)![0];
-    await completeAuthorization(authorizeUrlB, 'shared-company');
+    await completeAuthorization(authorizeUrlB, 'shared-company', EMPLOYEE_B.sub);
 
     const { text: secondB } = await callTool(TOKEN_B, 'shared-company');
     expect(secondB).toBe('handled for realm shared-company');
@@ -422,10 +443,25 @@ describe('Company-authorization application (#8)', () => {
     it('attributes the grant to the employee who asked, not to anyone else', async () => {
       const { text } = await callNoArgTool(TOKEN_B, 'authorize_company');
       const authorizeUrl = text.match(/https?:\/\/[^\s)]+/)![0];
-      await completeAuthorization(authorizeUrl, 'company-b');
+      await completeAuthorization(authorizeUrl, 'company-b', EMPLOYEE_B.sub);
 
       expect(await grantStore.forGrant({ employeeSub: EMPLOYEE_B.sub, realmId: 'company-b' }).read()).toBeDefined();
       expect(await grantStore.forGrant({ employeeSub: EMPLOYEE_A.sub, realmId: 'company-b' }).read()).toBeUndefined();
+    });
+
+    it('refuses when someone other than the employee the link was minted for completes the flow', async () => {
+      // The link is a bearer credential: anyone it is forwarded to can drive
+      // the flow. Attribution therefore follows the Intuit identity that
+      // actually consented, not the one that asked for the link.
+      const { text } = await callNoArgTool(TOKEN_A, 'authorize_company');
+      const authorizeUrl = text.match(/https?:\/\/[^\s)]+/)![0];
+
+      const callbackResponse = await completeAuthorization(authorizeUrl, 'company-b', EMPLOYEE_B.sub);
+
+      expect(callbackResponse.status).toBe(400);
+      expect(await callbackResponse.text()).toContain('<body class="failure">');
+      expect(await grantStore.forGrant({ employeeSub: EMPLOYEE_A.sub, realmId: 'company-b' }).read()).toBeUndefined();
+      expect(await grantStore.forGrant({ employeeSub: EMPLOYEE_B.sub, realmId: 'company-b' }).read()).toBeUndefined();
     });
 
     it('still refuses a mismatched Company on a realm-directed flow (#8 is unaffected)', async () => {
