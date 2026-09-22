@@ -3,6 +3,7 @@ import {
   COMPANY_AUTHORIZE_PATH,
   COMPANY_CALLBACK_PATH,
   CompanyAuthorizationStore,
+  PENDING_AUTHORIZATION_WINDOW_SENTENCE,
 } from "../auth/company-authorization.js";
 import { IntuitAccountingOAuthProvider, type IntuitAccountingAuthorizationProvider } from "../auth/intuit-accounting-authorization-provider.js";
 import { IntuitCompanyInfoProvider, type CompanyInfoProvider } from "../auth/company-info-provider.js";
@@ -61,8 +62,7 @@ const EXPIRED_PAGE: AuthorizationPage = {
   outcome: "failure",
   heading: "This authorization link has expired",
   detail:
-    "Authorization links are single-use and last 10 minutes. Ask Claude to connect the Company again to " +
-    "get a fresh one.",
+    `${PENDING_AUTHORIZATION_WINDOW_SENTENCE} Ask Claude to connect the Company again to get a fresh one.`,
 };
 
 /**
@@ -105,10 +105,12 @@ function handleCompanyAuthorize(
     return;
   }
 
-  // Re-mint a fresh, second start token as the Intuit `state` param: the
-  // first token is single-use and was already consumed above, and Intuit
-  // requires its own opaque state round-tripped through its redirect.
-  const state = deps.pending.create(start);
+  // Re-mint a second start token as the Intuit `state` param: the first token
+  // is single-use and was already consumed above, and Intuit requires its own
+  // opaque state round-tripped through its redirect. reissue() — not create()
+  // — so the second token inherits the first one's expiry instead of starting
+  // a fresh window the employee was never promised (issue #30).
+  const state = deps.pending.reissue(start);
   const authorizationUrl = deps.authorizationProvider.authorizationUrl({
     redirectUri: `${origin}${COMPANY_CALLBACK_PATH}`,
     state,

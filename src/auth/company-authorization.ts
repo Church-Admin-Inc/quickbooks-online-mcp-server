@@ -16,8 +16,25 @@ import type { EmployeeContext } from "../context/employee-context.js";
 export const COMPANY_AUTHORIZE_PATH = "/auth/quickbooks/authorize";
 export const COMPANY_CALLBACK_PATH = "/auth/quickbooks/callback";
 
-/** How long a start token minted by the checkpoint stays valid before the employee must retry the tool call. */
+/**
+ * How long the whole browser flow stays valid, from the moment the checkpoint
+ * mints a start token to the moment Intuit redirects back. This is the expiry
+ * `authorize_company` advertises to the employee, and — since reissue() below
+ * carries it through rather than restarting it (issue #30) — the one actually
+ * enforced. Past it, the employee retries the tool call for a fresh link.
+ */
 export const PENDING_AUTHORIZATION_TTL_SECONDS = 600;
+
+/**
+ * The window above, worded for an employee. Every page and tool result that
+ * tells someone how long their link lasts says it in these words, so the
+ * advertised expiry cannot drift from the enforced one (issue #30) — nor can
+ * the two halves of the flow be described as two windows in one place and one
+ * in another.
+ */
+export const PENDING_AUTHORIZATION_WINDOW_SENTENCE =
+  `Authorization links are single-use and expire ${PENDING_AUTHORIZATION_TTL_SECONDS / 60} minutes after ` +
+  "they are issued — a window that covers signing in with Intuit, not just opening the link.";
 
 export interface PendingCompanyAuthorization {
   employeeSub: string;
@@ -56,11 +73,28 @@ export class CompanyAuthorizationStore {
     return this.pending.size;
   }
 
-  create(record: { employeeSub: string; realmId?: string }, ttlSeconds: number = PENDING_AUTHORIZATION_TTL_SECONDS): string {
+  /** Sweep, mint, insert — the one place a token is issued, whatever its expiry came from. */
+  private mint(record: PendingCompanyAuthorization): string {
     this.sweepExpired();
     const token = randomToken();
-    this.pending.set(token, { ...record, expiresAt: Date.now() + ttlSeconds * 1000 });
+    this.pending.set(token, record);
     return token;
+  }
+
+  create(record: { employeeSub: string; realmId?: string }, ttlSeconds: number = PENDING_AUTHORIZATION_TTL_SECONDS): string {
+    return this.mint({ ...record, expiresAt: Date.now() + ttlSeconds * 1000 });
+  }
+
+  /**
+   * Mints a second token for a flow already under way — the Intuit `state`
+   * param, since the start token is single-use and has been consumed by the
+   * time Intuit's redirect is built. The record's `expiresAt` is carried
+   * through untouched rather than restarted (issue #30): both halves of the
+   * flow live inside the one window the employee was told about, so a link
+   * opened at minute nine leaves one minute for the Intuit half, not eleven.
+   */
+  reissue(record: PendingCompanyAuthorization): string {
+    return this.mint({ ...record });
   }
 
   /** Looks up and removes a start token (single use), or undefined if unknown/expired. */

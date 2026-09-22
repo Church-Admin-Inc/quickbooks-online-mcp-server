@@ -114,6 +114,25 @@ describe('CompanyAuthorizationStore', () => {
     expect(store.consume(liveToken)).toEqual(expect.objectContaining({ employeeSub: 'emp-1', realmId: 'company-a' }));
   });
 
+  it('reissues a second token carrying the original expiry, not a fresh window (#30)', () => {
+    const store = new CompanyAuthorizationStore();
+    const token = store.create({ employeeSub: 'emp-1', realmId: 'company-a' }, 1);
+    const start = store.consume(token)!;
+
+    const reissued = store.reissue(start);
+
+    expect(reissued).not.toBe(token);
+    const carried = store.consume(reissued);
+    expect(carried).toEqual(start);
+  });
+
+  it('reissues a token that is already dead when the flow it continues has itself expired (#30)', () => {
+    const store = new CompanyAuthorizationStore();
+    const start = { employeeSub: 'emp-1', realmId: 'company-a', expiresAt: Date.now() - 1 };
+
+    expect(store.consume(store.reissue(start))).toBeUndefined();
+  });
+
   it('reports its current size', () => {
     const store = new CompanyAuthorizationStore();
     expect(store.size()).toBe(0);

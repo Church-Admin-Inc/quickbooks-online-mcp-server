@@ -1,6 +1,7 @@
 import { authorizeCompany } from "../handlers/authorize-company.handler.js";
 import { ToolDefinition } from "../types/tool-definition.js";
 import { z } from "zod";
+import { PENDING_AUTHORIZATION_WINDOW_SENTENCE } from "../auth/company-authorization.js";
 import {
   CONNECT_COMPANY_RESOURCE_URI,
   connectCompanyResultFields,
@@ -31,7 +32,7 @@ const toolHandler = async () => {
         // without MCP Apps support, and is what the model reads.
         text:
           `[Connect a QuickBooks Company](${response.result!.authorize_url}) by signing in with your Intuit ` +
-          `account and choosing the Company to connect. The link is single-use and expires in 10 minutes. ` +
+          `account and choosing the Company to connect. ${PENDING_AUTHORIZATION_WINDOW_SENTENCE} ` +
           `Once you are done, retry your request or ask me to list your Companies.`,
       },
     ],

@@ -18,7 +18,7 @@ const { createStreamableHttpServer, MCP_HTTP_PATH } = await import('../../src/ht
 const { RegisterTool } = await import('../../src/helpers/register-tool');
 const { getCurrentCompanyContext } = await import('../../src/context/company-context');
 const { OAuthStore } = await import('../../src/auth/oauth-store');
-const { CompanyAuthorizationStore } = await import('../../src/auth/company-authorization');
+const { CompanyAuthorizationStore, PENDING_AUTHORIZATION_TTL_SECONDS } = await import('../../src/auth/company-authorization');
 const { FirestoreGrantStore } = await import('../../src/clients/firestore-grant-store');
 const { InMemoryFirestore } = await import('../../src/clients/in-memory-firestore');
 const { ListCompaniesTool } = await import('../../src/tools/list-companies.tool');
@@ -247,6 +247,44 @@ describe('Company-authorization application (#8)', () => {
 
     const staleCallback = await fetch(new URL('/auth/quickbooks/callback?state=not-a-real-state', base));
     expect(staleCallback.status).toBe(400);
+  });
+
+  it('expires the whole flow on the advertised window, without refreshing it when the link is opened (#30)', async () => {
+    // Opened at the last moment of the advertised window, then finished on
+    // Intuit just past it. Time is advanced by moving Date.now() rather than
+    // by sleeping: the assertion is about the window, not about how fast the
+    // test machine is, and the real HTTP server here rules out fake timers.
+    const realNow = Date.now;
+    let skew = 0;
+    Date.now = () => realNow() + skew;
+    try {
+      const { text: prompt } = await callNoArgTool(TOKEN_A, 'authorize_company');
+      const authorizeUrl = prompt.match(/https?:\/\/[^\s)]+/)![0];
+
+      // One second short of the full window: the link itself is still good.
+      skew = (PENDING_AUTHORIZATION_TTL_SECONDS - 1) * 1000;
+      authorizationProvider.nextRealmId = 'company-a';
+      const startResponse = await fetch(authorizeUrl, { redirect: 'manual' });
+      expect(startResponse.status).toBe(302);
+      const state = new URL(startResponse.headers.get('location')!).searchParams.get('state')!;
+
+      // Two seconds later the window is over. Before #30 the redirect above
+      // had bought a whole fresh one, and this callback would have succeeded.
+      skew = (PENDING_AUTHORIZATION_TTL_SECONDS + 1) * 1000;
+      const callbackUrl = new URL('/auth/quickbooks/callback', base);
+      callbackUrl.searchParams.set('code', 'intuit-auth-code');
+      callbackUrl.searchParams.set('state', state);
+      const callbackResponse = await fetch(callbackUrl);
+
+      expect(callbackResponse.status).toBe(400);
+      const body = await callbackResponse.text();
+      expect(body).toContain('expired');
+      // The refusal says how to get a fresh one.
+      expect(body).toContain('connect the Company again');
+      await expect(grantStore.forGrant({ employeeSub: EMPLOYEE_A.sub, realmId: 'company-a' }).read()).resolves.toBeUndefined();
+    } finally {
+      Date.now = realNow;
+    }
   });
 
   it('rejects an authorize/callback request missing its token/state param entirely', async () => {
