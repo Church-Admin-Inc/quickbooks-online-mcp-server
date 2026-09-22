@@ -1,6 +1,10 @@
 import { authorizeCompany } from "../handlers/authorize-company.handler.js";
 import { ToolDefinition } from "../types/tool-definition.js";
 import { z } from "zod";
+import {
+  CONNECT_COMPANY_RESOURCE_URI,
+  connectCompanyResultFields,
+} from "../mcp-apps/connect-company-app.js";
 
 const toolName = "authorize_company";
 const toolDescription =
@@ -23,13 +27,23 @@ const toolHandler = async () => {
         // authorizationNeededResponse() uses one: clients that render tool
         // output as Markdown show it as a clickable link rather than pasted
         // text. The URL is minted by this server, so there is nothing
-        // untrusted to escape here.
+        // untrusted to escape here. This stays the fallback for a client
+        // without MCP Apps support, and is what the model reads.
         text:
           `[Connect a QuickBooks Company](${response.result!.authorize_url}) by signing in with your Intuit ` +
           `account and choosing the Company to connect. The link is single-use and expires in 10 minutes. ` +
           `Once you are done, retry your request or ask me to list your Companies.`,
       },
     ],
+    // Renders as a real "Connect" button on a host that supports MCP Apps
+    // (issue #28). No Company is named: this tool exists precisely to
+    // connect one nobody has identified yet, and the employee picks it on
+    // Intuit's screen - hence reason "new", which the component words
+    // accordingly.
+    ...connectCompanyResultFields({
+      authorizeUrl: response.result!.authorize_url,
+      reason: "new",
+    }),
   };
 };
 
@@ -38,4 +52,8 @@ export const AuthorizeCompanyTool: ToolDefinition<typeof toolSchema> = {
   description: toolDescription,
   schema: toolSchema,
   handler: toolHandler,
+  // Every result of this tool is a connection prompt, so the component is
+  // declared on the tool itself as well as on the result - the binding
+  // claude.ai and other MCP Apps hosts read from `tools/list`.
+  uiResourceUri: CONNECT_COMPANY_RESOURCE_URI,
 };
