@@ -21,7 +21,14 @@ export const PENDING_AUTHORIZATION_TTL_SECONDS = 600;
 
 export interface PendingCompanyAuthorization {
   employeeSub: string;
-  realmId: string;
+  /**
+   * The Company this flow was started for, or undefined when the employee
+   * asked to connect a Company without naming one (issue #29): they pick it
+   * on Intuit's consent screen instead, and whichever they pick is the one
+   * the callback stores. Realm-directed flows (issue #8) still set it, and
+   * the callback still refuses a mismatch against it.
+   */
+  realmId?: string;
   expiresAt: number;
 }
 
@@ -49,7 +56,7 @@ export class CompanyAuthorizationStore {
     return this.pending.size;
   }
 
-  create(record: { employeeSub: string; realmId: string }, ttlSeconds: number = PENDING_AUTHORIZATION_TTL_SECONDS): string {
+  create(record: { employeeSub: string; realmId?: string }, ttlSeconds: number = PENDING_AUTHORIZATION_TTL_SECONDS): string {
     this.sweepExpired();
     const token = randomToken();
     this.pending.set(token, { ...record, expiresAt: Date.now() + ttlSeconds * 1000 });
@@ -95,11 +102,12 @@ export type CompanyAuthorizationResult =
  * ../clients/grant-quickbooks-clients.ts (issue #9), which needs the exact
  * same link when it detects a grant just died mid-call — same endpoints, same
  * one-time-token lifecycle, so there is exactly one authorization UX rather
- * than two.
+ * than two. `realmId` is omitted by the `authorize_company` tool (issue #29),
+ * which connects whichever Company the employee picks on Intuit's screen.
  */
 export function mintCompanyAuthorizeUrl(
   pending: CompanyAuthorizationStore,
-  record: { employeeSub: string; realmId: string },
+  record: { employeeSub: string; realmId?: string },
   origin: string
 ): string {
   const token = pending.create(record);
