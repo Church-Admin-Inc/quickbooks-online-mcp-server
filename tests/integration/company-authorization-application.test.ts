@@ -189,7 +189,8 @@ describe('Company-authorization application (#8)', () => {
 
     const callbackResponse = await completeAuthorization(authorizeUrl, 'company-a');
     expect(callbackResponse.status).toBe(200);
-    expect(await callbackResponse.text()).toContain('QuickBooks authorized');
+    // Keyed on the page's outcome, not its copy: the wording is free to change.
+    expect(await callbackResponse.text()).toContain('<body class="success">');
 
     const grant = await grantStore.forGrant({ employeeSub: EMPLOYEE_A.sub, realmId: 'company-a' }).read();
     expect(grant?.refreshToken).toBe('refresh-token-from-intuit');
@@ -219,7 +220,7 @@ describe('Company-authorization application (#8)', () => {
 
     const callbackResponse = await completeAuthorization(authorizeUrl, 'company-b');
     expect(callbackResponse.status).toBe(400);
-    expect(await callbackResponse.text()).toContain('Wrong Company');
+    expect(await callbackResponse.text()).toContain('<body class="failure">');
 
     await expect(grantStore.forGrant({ employeeSub: EMPLOYEE_A.sub, realmId: 'company-a' }).read()).resolves.toBeUndefined();
   });
@@ -360,7 +361,7 @@ describe('Company-authorization application (#8)', () => {
       const callbackResponse = await completeAuthorization(authorizeUrl, 'company-picked-on-intuit');
       expect(callbackResponse.status).toBe(200);
       const body = await callbackResponse.text();
-      expect(body).toContain('QuickBooks authorized');
+      expect(body).toContain('<body class="success">');
       expect(body).toContain('Company Name for company-picked-on-intuit');
 
       const grant = await grantStore
@@ -389,7 +390,7 @@ describe('Company-authorization application (#8)', () => {
 
       const callbackResponse = await completeAuthorization(authorizeUrl, 'a-different-company');
       expect(callbackResponse.status).toBe(400);
-      expect(await callbackResponse.text()).toContain('Wrong Company authorized');
+      expect(await callbackResponse.text()).toContain('<body class="failure">');
     });
 
     it('escapes a Company name before naming it on the success page', async () => {
