@@ -25,6 +25,35 @@ export interface AuditLogger {
   record(entry: AuditLogEntry): Promise<void>;
 }
 
+/**
+ * How long an audit entry lives before Firestore deletes it.
+ *
+ * Seven years matches the retention of the financial records the entry
+ * describes — the entries carry the tool's parameters, which for bookkeeping
+ * operations means amounts, dates, account and class names and memo text, so
+ * this is a Company's financial detail. Keeping it exactly as long as the books it
+ * documents is what justifies keeping it at all; keeping it longer is
+ * retention nobody can defend, and shorter would leave writes unaccounted for
+ * while the records they touched are still live. Stated as the retention
+ * period in docs/legal/privacy-policy.md, which a published Privacy Policy
+ * has to name (issue #33).
+ */
+export const AUDIT_LOG_RETENTION_YEARS = 7;
+
+/**
+ * The instant an entry recorded at `recordedAt` expires. Calendar arithmetic
+ * rather than a fixed span of milliseconds, so the leap days inside the window
+ * do not pull the date backwards (seven fixed 365-day years land up to two
+ * days early). The one imprecision left is a Feb 29 entry, which lands on Mar
+ * 1 — seven years is never a leap-to-leap span — and a day either way is
+ * meaningless at this scale.
+ */
+export function auditLogExpiryFor(recordedAt: Date): Date {
+  const expiresAt = new Date(recordedAt.getTime());
+  expiresAt.setUTCFullYear(expiresAt.getUTCFullYear() + AUDIT_LOG_RETENTION_YEARS);
+  return expiresAt;
+}
+
 interface StoredAuditLogEntry extends Record<string, unknown> {
   employeeSub: string;
   employeeEmail: string;
@@ -34,13 +63,23 @@ interface StoredAuditLogEntry extends Record<string, unknown> {
   // FirestoreDocRefLike.set() is not guaranteed to round-trip those faithfully.
   params: string;
   recordedAt: string;
+  /**
+   * Firestore TTL field (docs/deploy.md): a real Date, since the Admin SDK
+   * maps it to the Timestamp a TTL policy requires — unlike `recordedAt`,
+   * which stays an ISO string for readability. Expiry is the infrastructure's
+   * job, not the maintenance job's (src/jobs/grant-maintenance.ts): entries
+   * age out even if no sweep ever runs again.
+   */
+  expiresAt: Date;
 }
 
 /**
  * Firestore-shaped audit log, mirroring FirestoreGrantStore's seam
  * (../clients/firestore-grant-store.ts) so a real Firestore client can stand
  * in later with no adapter code. Each entry gets its own document (no
- * updates, no deletes - an audit log is append-only).
+ * updates, and no deletes this code performs — an audit log is append-only;
+ * the only deletion is Firestore's TTL sweep of `expiresAt`, see
+ * AUDIT_LOG_RETENTION_YEARS).
  */
 export class FirestoreAuditLog implements AuditLogger {
   constructor(
@@ -50,13 +89,15 @@ export class FirestoreAuditLog implements AuditLogger {
 
   async record(entry: AuditLogEntry): Promise<void> {
     const id = `${Date.now()}-${crypto.randomBytes(8).toString("hex")}`;
+    const recordedAt = new Date();
     const stored: StoredAuditLogEntry = {
       employeeSub: entry.employeeSub,
       employeeEmail: entry.employeeEmail,
       realmId: entry.realmId,
       toolName: entry.toolName,
       params: JSON.stringify(entry.params),
-      recordedAt: new Date().toISOString(),
+      recordedAt: recordedAt.toISOString(),
+      expiresAt: auditLogExpiryFor(recordedAt),
     };
     await this.firestore.doc(`${this.collectionPath}/${id}`).set(stored);
   }

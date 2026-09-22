@@ -1,8 +1,9 @@
 # Deploying to Cloud Run (issue #13)
 
 The streamable-HTTP server (`npm run start:http`) deploys to Cloud Run,
-backed by Firestore in native mode for grants and the audit log, with Cloud
-Scheduler driving the maintenance job (#12). No Cloud NAT or static egress
+backed by Firestore in native mode for grants and the audit log (the latter
+under a TTL policy, below), with Cloud Scheduler driving the maintenance job
+(#12). No Cloud NAT or static egress
 IP is provisioned — Intuit's Geolocation IP field is optional, and this
 service never needs outbound access from a fixed address.
 
@@ -93,6 +94,35 @@ gcloud run services update qbo-mcp-server --project=<PROJECT_ID> --region=<REGIO
 `MCP_HTTP_ALLOWED_HOSTS` guards against DNS rebinding (see
 `create-streamable-http-server.ts`); it must list the exact Cloud Run
 hostname or every request gets a 400.
+
+## Audit log retention (issue #33)
+
+Audit entries (`audit-log` collection) carry the tool parameters of every
+write, which for bookkeeping operations is a Company's financial detail. Each
+document is stamped with an `expiresAt` Timestamp seven years out
+(`AUDIT_LOG_RETENTION_YEARS` in `src/audit/audit-log.ts`), and a Firestore
+TTL policy on that field does the deleting:
+
+```
+gcloud firestore fields ttls update expiresAt --project=<PROJECT_ID> \
+  --database='(default)' --collection-group=audit-log --enable-ttl
+```
+
+`--database` must name the same database the service writes to — the one
+`FIRESTORE_DATABASE_ID` selects (`(default)` unless that var is set,
+see `createFirestore()`). Pointed at the wrong database the command succeeds
+and nothing ever expires. The same goes for `--collection-group`: it must
+match the collection `FirestoreAuditLog` was constructed with, which is
+`audit-log` everywhere this server wires itself up.
+
+TTL rather than the maintenance job below, deliberately: the retention period
+is stated in the published Privacy Policy, so it has to hold even if no
+scheduled job ever runs again. Firestore deletes expired documents within 24
+hours of their expiry, on its own schedule and at no read/write cost.
+Applying the policy backfills nothing — documents written before it exists
+already carry `expiresAt`, and documents written before that field existed at
+all have none and so never expire; there are only a handful from #10's
+development, and they can be dropped by hand if that matters.
 
 ## Scheduled grant maintenance (issue #12)
 
