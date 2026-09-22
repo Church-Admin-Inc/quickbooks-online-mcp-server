@@ -20,6 +20,7 @@ import {
 import { runWithEmployeeContext } from "../../../src/context/employee-context";
 import { runWithRequestContext } from "../../../src/context/request-context";
 import { CompanyAuthorizationStore } from "../../../src/auth/company-authorization";
+import { CONNECT_COMPANY_RESOURCE_URI } from "../../../src/mcp-apps/connect-company-app";
 import type { GrantStore, GrantHandle, Grant } from "../../../src/clients/firestore-grant-store";
 
 // ── getCrudCategory ──────────────────────────────────────────────────────────
@@ -86,9 +87,9 @@ describe("isToolDisabled", () => {
 });
 
 // ── RegisterTool ─────────────────────────────────────────────────────────────
-// Verifies the integration between isToolDisabled and server.tool():
+// Verifies the integration between isToolDisabled and server.registerTool():
 //   - Enabled tools are registered with the exact fields from ToolDefinition.
-//   - Disabled tools cause RegisterTool to return early without calling server.tool().
+//   - Disabled tools cause RegisterTool to return early without calling server.registerTool().
 // Uses a minimal mock server object to avoid coupling to the MCP SDK internals.
 
 describe("RegisterTool", () => {
@@ -103,13 +104,14 @@ describe("RegisterTool", () => {
   const def = (name: string): ToolDefinition<typeof schema> =>
     ({ name, description: `desc:${name}`, schema, handler });
 
-  // Confirm all four ToolDefinition fields are forwarded to server.tool() unchanged.
-  it("calls server.tool() with all definition fields when enabled", () => {
-    const server = { tool: jest.fn() } as unknown as McpServer;
+  // Confirm all four ToolDefinition fields are forwarded to server.registerTool() unchanged.
+  it("calls server.registerTool() with all definition fields when enabled", () => {
+    const server = { registerTool: jest.fn() } as unknown as McpServer;
     const d = def("get_invoice");
     RegisterTool(server, d);
-    expect(server.tool).toHaveBeenCalledTimes(1);
-    const [name, description, shape, handler] = (server.tool as jest.Mock).mock.calls[0] as any[];
+    expect(server.registerTool).toHaveBeenCalledTimes(1);
+    const [name, config, handler] = (server.registerTool as jest.Mock).mock.calls[0] as any[];
+    const { description, inputSchema: shape } = config;
     expect(name).toBe(d.name);
     // #4: the description gains a realm_id note at registration time, so it
     // starts with (rather than equals) the definition's own description.
@@ -122,25 +124,25 @@ describe("RegisterTool", () => {
   });
 
   // One test per mutable category to confirm the early-return path is reached.
-  it("skips server.tool() for disabled WRITE tool", () => {
+  it("skips server.registerTool() for disabled WRITE tool", () => {
     process.env["QUICKBOOKS_DISABLE_WRITE"] = "true";
-    const server = { tool: jest.fn() } as unknown as McpServer;
+    const server = { registerTool: jest.fn() } as unknown as McpServer;
     RegisterTool(server, def("create_invoice"));
-    expect(server.tool).not.toHaveBeenCalled();
+    expect(server.registerTool).not.toHaveBeenCalled();
   });
 
-  it("skips server.tool() for disabled UPDATE tool", () => {
+  it("skips server.registerTool() for disabled UPDATE tool", () => {
     process.env["QUICKBOOKS_DISABLE_UPDATE"] = "true";
-    const server = { tool: jest.fn() } as unknown as McpServer;
+    const server = { registerTool: jest.fn() } as unknown as McpServer;
     RegisterTool(server, def("update_customer"));
-    expect(server.tool).not.toHaveBeenCalled();
+    expect(server.registerTool).not.toHaveBeenCalled();
   });
 
-  it("skips server.tool() for disabled DELETE tool", () => {
+  it("skips server.registerTool() for disabled DELETE tool", () => {
     process.env["QUICKBOOKS_DISABLE_DELETE"] = "true";
-    const server = { tool: jest.fn() } as unknown as McpServer;
+    const server = { registerTool: jest.fn() } as unknown as McpServer;
     RegisterTool(server, def("delete_payment"));
-    expect(server.tool).not.toHaveBeenCalled();
+    expect(server.registerTool).not.toHaveBeenCalled();
   });
 
   // READ tools must register even when all three DISABLE vars are set.
@@ -148,17 +150,17 @@ describe("RegisterTool", () => {
     process.env["QUICKBOOKS_DISABLE_WRITE"]  = "true";
     process.env["QUICKBOOKS_DISABLE_UPDATE"] = "true";
     process.env["QUICKBOOKS_DISABLE_DELETE"] = "true";
-    const server = { tool: jest.fn() } as unknown as McpServer;
+    const server = { registerTool: jest.fn() } as unknown as McpServer;
     RegisterTool(server, def("search_invoices"));
-    expect(server.tool).toHaveBeenCalledTimes(1);
+    expect(server.registerTool).toHaveBeenCalledTimes(1);
   });
 
   // Confirm the legacy hyphen separator is handled by the early-return path.
   it("skips hyphen-prefixed WRITE tool when QUICKBOOKS_DISABLE_WRITE=true", () => {
     process.env["QUICKBOOKS_DISABLE_WRITE"] = "true";
-    const server = { tool: jest.fn() } as unknown as McpServer;
+    const server = { registerTool: jest.fn() } as unknown as McpServer;
     RegisterTool(server, def("create-bill"));
-    expect(server.tool).not.toHaveBeenCalled();
+    expect(server.registerTool).not.toHaveBeenCalled();
   });
 });
 
@@ -174,9 +176,9 @@ describe("unsupported parameter reporting", () => {
       seen.push(args);
       return { content: [{ type: "text", text: "ok" }] };
     });
-    const server = { tool: jest.fn() } as unknown as McpServer;
+    const server = { registerTool: jest.fn() } as unknown as McpServer;
     RegisterTool(server, { name: toolName, description: "d", schema, handler } as any);
-    const registered = (server.tool as jest.Mock).mock.calls[0][3] as any;
+    const registered = (server.registerTool as jest.Mock).mock.calls[0][2] as any;
     const result = await registered({ params });
     return { result, seenByHandler: seen[0]?.params };
   };
@@ -261,12 +263,12 @@ describe("unsupported parameter reporting", () => {
 // Company via the AsyncLocalStorage context from src/context/company-context.
 describe("realm_id injection", () => {
   const register = (name: string, schema: any, handler: any) => {
-    const server = { tool: jest.fn() } as unknown as McpServer;
+    const server = { registerTool: jest.fn() } as unknown as McpServer;
     RegisterTool(server, { name, description: "d", schema, handler } as any);
-    const call = (server.tool as jest.Mock).mock.calls[0] as any[];
+    const call = (server.registerTool as jest.Mock).mock.calls[0] as any[];
     return {
-      registered: call?.[3] as any,
-      paramsSchema: call?.[2]?.params as any,
+      registered: call?.[2] as any,
+      paramsSchema: call?.[1]?.inputSchema?.params as any,
     };
   };
 
@@ -356,14 +358,14 @@ describe("realm_id injection", () => {
   });
 
   it("mentions realm_id in the description so its meaning is unmissable", () => {
-    const server = { tool: jest.fn() } as unknown as McpServer;
+    const server = { registerTool: jest.fn() } as unknown as McpServer;
     RegisterTool(server, {
       name: "create_invoice",
       description: "Create an invoice.",
       schema: z.object({ customer_ref: z.string() }),
       handler: jest.fn(),
     } as any);
-    const [, description] = (server.tool as jest.Mock).mock.calls[0] as any[];
+    const [, { description }] = (server.registerTool as jest.Mock).mock.calls[0] as any[];
     expect(description).toContain("realm_id");
   });
 
@@ -400,10 +402,10 @@ describe("Company-authorization checkpoint", () => {
   const EMPLOYEE = { sub: "emp-1", email: "emp@example.com" };
 
   const register = (name: string, schema: any, handler: any) => {
-    const server = { tool: jest.fn() } as unknown as McpServer;
+    const server = { registerTool: jest.fn() } as unknown as McpServer;
     RegisterTool(server, { name, description: "d", schema, handler } as any);
-    const call = (server.tool as jest.Mock).mock.calls[0] as any[];
-    return call?.[3] as any;
+    const call = (server.registerTool as jest.Mock).mock.calls[0] as any[];
+    return call?.[2] as any;
   };
 
   function fakeGrantStore(grant: Grant | undefined): GrantStore {
@@ -486,6 +488,72 @@ describe("Company-authorization checkpoint", () => {
     expect(text).toContain("https://qbo.example.com/auth/quickbooks/authorize?token=");
   });
 
+  it("also returns the prompt as an MCP App, keeping the Markdown link as the fallback (#28)", async () => {
+    setCompanyAuthorizationDeps({
+      grantStore: fakeGrantStore({ ...HEALTHY_GRANT, health: "unhealthy", companyName: "Grace Community Church" }),
+      pending: new CompanyAuthorizationStore(),
+    });
+    const registered = register("create_invoice", z.object({ customer_ref: z.string() }), jest.fn());
+
+    const result = await runWithEmployeeContext(EMPLOYEE, () =>
+      runWithRequestContext({ origin: "https://qbo.example.com" }, () =>
+        registered({ params: { customer_ref: "1", realm_id: "named-co" } })
+      )
+    );
+
+    // The component gets the Company, the reason and the same URL...
+    expect(result._meta).toEqual({ ui: { resourceUri: CONNECT_COMPANY_RESOURCE_URI } });
+    expect(result.structuredContent).toEqual({
+      authorize_url: expect.stringContaining("https://qbo.example.com/auth/quickbooks/authorize?token="),
+      reason: "unhealthy",
+      company_name: "Grace Community Church",
+      realm_id: "named-co",
+    });
+    // ...and the text a client without MCP Apps support reads is untouched.
+    expect(result.content[0].text).toContain("no longer valid and must be re-authorized");
+  });
+
+  it("names no Company in the component's data when the Company's name is unknown", async () => {
+    setCompanyAuthorizationDeps({ grantStore: fakeGrantStore(undefined), pending: new CompanyAuthorizationStore() });
+    const registered = register("create_invoice", z.object({ customer_ref: z.string() }), jest.fn());
+
+    const result = await runWithEmployeeContext(EMPLOYEE, () =>
+      runWithRequestContext({ origin: "https://qbo.example.com" }, () =>
+        registered({ params: { customer_ref: "1", realm_id: "named-co" } })
+      )
+    );
+
+    expect("company_name" in result.structuredContent).toBe(false);
+    expect(result.structuredContent.realm_id).toBe("named-co");
+  });
+
+  it("never declares the component on the tool itself, since most results are not connection prompts", async () => {
+    // A tool-level _meta.ui.resourceUri binds EVERY result of that tool to
+    // the component; create_invoice's ordinary results are invoices.
+    const server = { registerTool: jest.fn() } as unknown as McpServer;
+    RegisterTool(server, {
+      name: "create_invoice",
+      description: "d",
+      schema: z.object({ customer_ref: z.string() }),
+      handler: jest.fn(),
+    } as any);
+    const [, config] = (server.registerTool as jest.Mock).mock.calls[0] as any[];
+    expect(config._meta).toBeUndefined();
+  });
+
+  it("declares the component on a tool that opts in, so a host can bind it from tools/list", () => {
+    const server = { registerTool: jest.fn() } as unknown as McpServer;
+    RegisterTool(server, {
+      name: "authorize_company",
+      description: "d",
+      schema: z.object({}),
+      handler: jest.fn(),
+      uiResourceUri: CONNECT_COMPANY_RESOURCE_URI,
+    } as any);
+    const [, config] = (server.registerTool as jest.Mock).mock.calls[0] as any[];
+    expect(config._meta).toEqual({ ui: { resourceUri: CONNECT_COMPANY_RESOURCE_URI } });
+  });
+
   it("invokes the handler when the calling employee already holds a healthy grant", async () => {
     setCompanyAuthorizationDeps({ grantStore: fakeGrantStore(HEALTHY_GRANT), pending: new CompanyAuthorizationStore() });
     const handler = jest.fn(async () => ({ content: [{ type: "text", text: "ok" }] }));
@@ -564,10 +632,10 @@ describe("write audit trail", () => {
   const EMPLOYEE = { sub: "emp-1", email: "emp@example.com" };
 
   const register = (name: string, schema: any, handler: any) => {
-    const server = { tool: jest.fn() } as unknown as McpServer;
+    const server = { registerTool: jest.fn() } as unknown as McpServer;
     RegisterTool(server, { name, description: "d", schema, handler } as any);
-    const call = (server.tool as jest.Mock).mock.calls[0] as any[];
-    return call?.[3] as any;
+    const call = (server.registerTool as jest.Mock).mock.calls[0] as any[];
+    return call?.[2] as any;
   };
 
   function fakeAuditLogger(): AuditLogger & { entries: AuditLogEntry[] } {

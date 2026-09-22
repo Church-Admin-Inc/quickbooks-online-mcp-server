@@ -10,6 +10,7 @@ import {
 } from '../../../src/auth/company-authorization';
 import { runWithEmployeeContext } from '../../../src/context/employee-context';
 import { runWithRequestContext } from '../../../src/context/request-context';
+import { CONNECT_COMPANY_RESOURCE_URI } from '../../../src/mcp-apps/connect-company-app';
 
 const EMPLOYEE = { sub: 'emp-1', email: 'emp@example.com' };
 const ORIGIN = 'https://qbo.example.com';
@@ -72,6 +73,23 @@ describe('AuthorizeCompanyTool', () => {
     setAuthorizeCompanyDeps({ pending: new CompanyAuthorizationStore() });
     const result: any = await inContext(() => (AuthorizeCompanyTool.handler as any)({ params: {} }));
     expect(result.content[0].text).toMatch(/\[Connect a QuickBooks Company\]\(https:\/\/qbo\.example\.com/);
+  });
+
+  it('also returns the prompt as an MCP App, naming no Company (#28)', async () => {
+    setAuthorizeCompanyDeps({ pending: new CompanyAuthorizationStore() });
+    const result: any = await inContext(() => (AuthorizeCompanyTool.handler as any)({ params: {} }));
+
+    expect(result._meta).toEqual({ ui: { resourceUri: CONNECT_COMPANY_RESOURCE_URI } });
+    expect(result.structuredContent.reason).toBe('new');
+    expect(result.structuredContent.authorize_url).toBe(
+      result.content[0].text.match(/\((https:[^)]+)\)/)[1]
+    );
+    // This tool exists to connect a Company nobody has identified yet.
+    expect('company_name' in result.structuredContent).toBe(false);
+  });
+
+  it('declares the component on the tool, since every one of its results is a connection prompt', () => {
+    expect(AuthorizeCompanyTool.uiResourceUri).toBe(CONNECT_COMPANY_RESOURCE_URI);
   });
 
   it('surfaces the refusal as text when it cannot mint a link', async () => {

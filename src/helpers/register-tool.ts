@@ -6,6 +6,7 @@ import { getCurrentEmployeeContext } from "../context/employee-context.js";
 import { getCurrentRequestContext } from "../context/request-context.js";
 import { checkCompanyAuthorization, type CompanyAuthorizationDeps } from "../auth/company-authorization.js";
 import type { AuditLogger } from "../audit/audit-log.js";
+import { connectCompanyResultFields } from "../mcp-apps/connect-company-app.js";
 
 /**
  * Defines CRUD categories for tools
@@ -261,14 +262,29 @@ function authorizationNeededResponse(
         type: "text" as const,
         // Markdown link, not a bare URL: clients that render tool-result
         // text as Markdown (e.g. claude.ai relaying this in its own reply)
-        // then show a clickable link rather than pasted text. There is no
-        // MCP content type for an actual "Connect" button/widget today -
-        // that needs an MCP App UI resource (tracked separately: #28).
+        // then show a clickable link rather than pasted text. This is the
+        // fallback for every client that does not implement MCP Apps, and
+        // also the only version the MODEL sees, since structuredContent
+        // below is handed to the component and to the host alone.
         text:
           `${toolName} could not run: ${explanation}. [Authorize QuickBooks Company "${companyLabel}"](${authorizeUrl}) ` +
           `by signing in with your Intuit account, then retry the call.`,
       },
     ],
+    // Renders the prompt as a real "Connect" button on a host that supports
+    // MCP Apps (issue #28, ../mcp-apps/connect-company-app.ts). Carried on
+    // the RESULT rather than declared on the tool: any of this server's ~145
+    // tools can trip this checkpoint, but only this one result of theirs is
+    // a connection prompt - a tool-level `_meta.ui.resourceUri` would claim
+    // every invoice and report they return is one too. The unescaped name is
+    // used here, not companyLabel: escapeMarkdown() exists for the Markdown
+    // link above, and the component renders text through textContent.
+    ...connectCompanyResultFields({
+      authorizeUrl,
+      reason,
+      realmId,
+      ...(companyName === undefined ? {} : { companyName }),
+    }),
   };
 }
 
@@ -389,10 +405,22 @@ export function RegisterTool<T extends z.ZodType<any, any>>(
     return result;
   }) as typeof toolDefinition.handler;
 
-  server.tool(
+  server.registerTool(
     toolDefinition.name,
-    spansAllCompanies ? toolDefinition.description : describeRealmId(toolDefinition.description, category),
-    { params: paramsSchema },
+    {
+      description: spansAllCompanies
+        ? toolDefinition.description
+        : describeRealmId(toolDefinition.description, category),
+      inputSchema: { params: paramsSchema },
+      // A tool that ALWAYS returns one kind of result can bind itself to an
+      // MCP App component here, so a host renders every result of it as that
+      // component (issue #28). Only authorize_company does; the
+      // authorization checkpoint above, which any tool can trip, points at
+      // its component from the result instead.
+      ...(toolDefinition.uiResourceUri
+        ? { _meta: { ui: { resourceUri: toolDefinition.uiResourceUri } } }
+        : {}),
+    },
     handler
   );
 }

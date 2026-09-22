@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CreateInvoiceTool } from "../tools/create-invoice.tool.js";
 import { RegisterTool } from "../helpers/register-tool.js";
+import { registerConnectCompanyApp } from "../mcp-apps/connect-company-app.js";
 import { TOOL_GROUPS, ToolGroup, getEnabledToolGroups, selectEnabledTools } from "../config/tool-groups.js";
 import { ToolDefinition } from "../types/tool-definition.js";
 import { ReadInvoiceTool } from "../tools/read-invoice.tool.js";
@@ -442,6 +443,12 @@ const TOOL_REGISTRY: ReadonlyArray<{ tool: ToolDefinition<any>; group: ToolGroup
  * enforced inside RegisterTool itself for every tool that reaches it.
  */
 export function registerAllTools(server: McpServer): void {
+  // The Company-connection MCP App (issue #28). Registered unconditionally,
+  // not behind a tool group: it is a resource rather than a tool, and both
+  // tools that point at it (authorize_company, and any tool tripping the
+  // authorization checkpoint) can only render if it is there to be read.
+  registerConnectCompanyApp(server);
+
   const enabledGroups = getEnabledToolGroups();
   for (const tool of selectEnabledTools(TOOL_REGISTRY, enabledGroups)) {
     RegisterTool(server, tool);

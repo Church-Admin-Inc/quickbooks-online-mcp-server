@@ -23,6 +23,9 @@ const { FirestoreGrantStore } = await import('../../src/clients/firestore-grant-
 const { InMemoryFirestore } = await import('../../src/clients/in-memory-firestore');
 const { ListCompaniesTool } = await import('../../src/tools/list-companies.tool');
 const { AuthorizeCompanyTool } = await import('../../src/tools/authorize-company.tool');
+const { registerConnectCompanyApp, CONNECT_COMPANY_RESOURCE_URI, CONNECT_COMPANY_MIME_TYPE } = await import(
+  '../../src/mcp-apps/connect-company-app'
+);
 
 const EMPLOYEE_A = { sub: 'intuit-sub-a', email: 'a@example.com' };
 const EMPLOYEE_B = { sub: 'intuit-sub-b', email: 'b@example.com' };
@@ -70,6 +73,9 @@ function registerEchoRealmTool(server: McpServer): void {
   } as any);
   RegisterTool(server, ListCompaniesTool as any);
   RegisterTool(server, AuthorizeCompanyTool as any);
+  // Mirrors src/server/register-all-tools.ts, which registers the
+  // Company-connection component alongside the tools (#28).
+  registerConnectCompanyApp(server);
 }
 
 async function listen(server: http.Server): Promise<URL> {
@@ -405,6 +411,52 @@ describe('Company-authorization application (#8)', () => {
       expect(body).not.toContain('<script>');
       expect(body).toContain('&#60;script&#62;');
       expect(body).toContain('&#38;');
+    });
+
+    it('hands the connection prompt to an MCP Apps host as a component, not only as text (#28)', async () => {
+      const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+      const { StreamableHTTPClientTransport } = await import('@modelcontextprotocol/sdk/client/streamableHttp.js');
+      const client = new Client({ name: 'test-client', version: '1.0.0' });
+      const transport = new StreamableHTTPClientTransport(new URL(MCP_HTTP_PATH, base), {
+        requestInit: { headers: { Authorization: `Bearer ${TOKEN_A}` } },
+      });
+      await client.connect(transport);
+      try {
+        // 1. The component is listed and readable, which is how a host gets
+        //    the HTML at all.
+        const resources = await client.listResources();
+        const listed = resources.resources.find((r) => r.uri === CONNECT_COMPANY_RESOURCE_URI);
+        expect(listed?.mimeType).toBe(CONNECT_COMPANY_MIME_TYPE);
+        const read = await client.readResource({ uri: CONNECT_COMPANY_RESOURCE_URI });
+        const component = read.contents[0] as { mimeType?: string; text?: string };
+        expect(component.mimeType).toBe(CONNECT_COMPANY_MIME_TYPE);
+        expect(component.text).toContain('Connect QuickBooks');
+
+        // 2. authorize_company declares the binding on the tool itself.
+        const tools = await client.listTools();
+        const authorizeTool = tools.tools.find((t) => t.name === 'authorize_company');
+        expect(authorizeTool?._meta).toEqual({ ui: { resourceUri: CONNECT_COMPANY_RESOURCE_URI } });
+
+        // 3. Its result carries the data the component renders - alongside,
+        //    not instead of, the Markdown link a plain client reads.
+        const result: any = await client.callTool({ name: 'authorize_company', arguments: { params: {} } });
+        expect(result._meta).toEqual({ ui: { resourceUri: CONNECT_COMPANY_RESOURCE_URI } });
+        expect(result.structuredContent.reason).toBe('new');
+        expect(result.structuredContent.authorize_url).toContain('/auth/quickbooks/authorize?token=');
+        expect(result.content[0].text).toContain('[Connect a QuickBooks Company](');
+
+        // 4. And so does the lazy checkpoint's prompt, which names a Company.
+        const checkpoint: any = await client.callTool({
+          name: 'create_echo',
+          arguments: { params: { realm_id: 'company-unconnected' } },
+        });
+        expect(checkpoint._meta).toEqual({ ui: { resourceUri: CONNECT_COMPANY_RESOURCE_URI } });
+        expect(checkpoint.structuredContent).toEqual(
+          expect.objectContaining({ reason: 'missing', realm_id: 'company-unconnected' })
+        );
+      } finally {
+        await client.close();
+      }
     });
 
     it('expires the link, and says so, rather than silently connecting nothing', async () => {
